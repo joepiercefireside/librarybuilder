@@ -27,8 +27,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers
-RUN playwright install
+# Install Playwright browsers with detailed logging
+RUN echo "Installing Playwright..." && \
+    python -m playwright install && \
+    python -m playwright install-deps && \
+    python -m playwright --version && \
+    ls -l /root/.cache/ms-playwright || { echo "Playwright binaries not found"; exit 1; } && \
+    find /root/.cache/ms-playwright -type f -exec ls -l {} \; && \
+    echo "Playwright installation completed."
 
 # Copy application code
 COPY . .
