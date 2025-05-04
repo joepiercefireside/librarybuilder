@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, Response
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import psycopg2
 from psycopg2.extras import execute_values
@@ -13,6 +13,7 @@ from crawl4ai import AsyncWebCrawler
 import urllib.parse
 import urllib.request
 import asyncio
+import json
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -24,17 +25,17 @@ login_manager.login_view = 'login'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize MobileBERT model and tokenizer lazily
+# Initialize embedding model and tokenizer lazily
 tokenizer = None
 model = None
 
-def load_mobilebert_model():
+def load_embedding_model():
     global tokenizer, model
     if tokenizer is None or model is None:
-        logger.info("Loading MobileBERT model...")
-        tokenizer = AutoTokenizer.from_pretrained('google/mobilebert-uncased')
-        model = AutoModel.from_pretrained('google/mobilebert-uncased')
-        logger.info("MobileBERT model loaded.")
+        logger.info("Loading all-MiniLM-L6-v2 model...")
+        tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
+        model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
+        logger.info("all-MiniLM-L6-v2 model loaded.")
     return tokenizer, model
 
 # Database connection function with error handling
@@ -76,28 +77,32 @@ def load_user(user_id):
 def generate_embedding(text):
     """Generate embedding for a single text."""
     try:
-        tokenizer, model = load_mobilebert_model()
+        tokenizer, model = load_embedding_model()
         inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
         with torch.no_grad():
             outputs = model(**inputs)
-        return outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+        embedding = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+        return embedding
     except Exception as e:
         logger.error(f"Error generating embedding: {e}")
         return None
 
 async def crawl_website(start_url):
-    """Crawl a website and extract text and PDFs."""
+    """Crawl a website and extract text and PDFs with progress updates."""
     async with AsyncWebCrawler(verbose=True) as crawler:
         crawled_data = []
         visited_urls = set()
         to_visit = [start_url]
         base_domain = urllib.parse.urlparse(start_url).netloc
+        links_found = 1  # Start with the initial URL
+        links_scanned = 0
         
-        while to_visit and len(crawled_data) < 100:  # Limit for testing
+        while to_visit and len(crawled_data) < 10:  # Reduced limit for testing
             url = to_visit.pop(0)
             if url in visited_urls:
                 continue
             visited_urls.add(url)
+            links_scanned += 1
             
             try:
                 result = await crawler.arun(url=url, follow_links=True, max_depth=2)
@@ -130,11 +135,23 @@ async def crawl_website(start_url):
                     
                     # Add new links to visit (same domain)
                     for link in result.links:
-                        if urllib.parse.urlparse(link).netloc == base_domain and link not in visited_urls:
+                        if urllib.parse.urlparse(link).netloc == base_domain and link not in visited_urls and link not in to_visit:
                             to_visit.append(link)
+                            links_found += 1
+                    
+                    # Yield progress update
+                    yield json.dumps({
+                        "links_found": links_found,
+                        "links_scanned": links_scanned,
+                        "items_crawled": len(crawled_data)
+                    }) + "\n"
+                    
+                    # Free memory
+                    torch.cuda.empty_cache() if torch.cuda.is_available() else None
             except Exception as e:
                 logger.error(f"Error crawling {url}: {e}")
         
+        yield json.dumps({"status": "complete", "items_crawled": len(crawled_data)}) + "\n"
         return crawled_data
 
 def extract_pdf_text(pdf_path):
@@ -222,24 +239,36 @@ def crawl():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                crawled_data = loop.run_until_complete(crawl_website(start_url))
+                # Stream progress updates via SSE
+                def generate():
+                    async def run_crawl():
+                        crawled_data = []
+                        async for update in crawl_website(start_url):
+                            yield f"data: {update}\n\n"
+                            # Collect crawled data after streaming
+                            if json.loads(update).get("status") == "complete":
+                                async for data in crawl_website(start_url):
+                                    if "status" not in json.loads(data):
+                                        crawled_data.append(json.loads(data))
+                                # Store data in database
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+                                query = """
+                                INSERT INTO documents (url, content, embedding, file_path)
+                                VALUES %s
+                                ON CONFLICT (url) DO NOTHING
+                                """
+                                execute_values(cur, query, crawled_data)
+                                conn.commit()
+                                cur.close()
+                                conn.close()
+                                yield f"data: {json.dumps({'status': 'stored', 'items_crawled': len(crawled_data)})}\n\n"
+                    
+                    loop.run_until_complete(run_crawl())
+                
+                return Response(generate(), mimetype='text/event-stream')
             finally:
                 loop.close()
-            
-            conn = get_db_connection()
-            cur = conn.cursor()
-            query = """
-            INSERT INTO documents (url, content, embedding, file_path)
-            VALUES %s
-            ON CONFLICT (url) DO NOTHING
-            """
-            execute_values(cur, query, crawled_data)
-            conn.commit()
-            cur.close()
-            conn.close()
-            
-            flash(f"Crawled {len(crawled_data)} items.", 'success')
-            return redirect(url_for('search'))
         
         return render_template('crawl.html')
     except Exception as e:

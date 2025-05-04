@@ -1,49 +1,14 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Crawl - LibraryBuilder</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        #progress-container { display: none; margin-top: 1rem; }
+        #progress-container p { margin: 0.5rem 0; }
+    </style>
 </head>
 <body class="bg-gray-100">
     <nav class="bg-white shadow">
@@ -51,7 +16,8 @@
             <div class="flex justify-between h-16">
                 <div class="flex">
                     <div class="flex-shrink-0 flex items-center">
-                        <a href="/" class="text-xl font-bold text-gray-800">LibraryBuilder</a>
+                        <img src="/static/logo.png" alt="LibraryBuilder Logo" class="h-8 w-auto">
+                        <a href="/" class="text-xl font-bold text-gray-800 ml-2">LibraryBuilder</a>
                     </div>
                     <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
                         <a href="/crawl" class="border-b-2 border-indigo-500 text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Crawl</a>
@@ -73,12 +39,58 @@
         {% if success %}
             <p class="text-green-500">{{ success }}</p>
         {% endif %}
-        <form method="POST" class="mt-4">
+        <form id="crawl-form" method="POST" class="mt-4">
             <div class="flex space-x-4">
-                <input type="url" name="url" placeholder="Enter website URL (e.g., https://example.com)" class="flex-1 px-4 py-2 border rounded-md" required>
-                <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Crawl</button>
+                <input type="url" name="url" id="url-input" placeholder="Enter website URL (e.g., https://example.com)" class="flex-1 px-4 py-2 border rounded-md" required>
+                <button type="submit" id="crawl-button" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Crawl</button>
             </div>
         </form>
+        <div id="progress-container" class="bg-white p-4 rounded-lg shadow mt-4">
+            <p id="links-found">Links Found: 0</p>
+            <p id="links-scanned">Links Scanned: 0</p>
+            <p id="items-crawled">Items Crawled: 0</p>
+            <p id="status">Status: Waiting...</p>
+        </div>
     </div>
+
+    <script>
+        document.getElementById('crawl-form').addEventListener('submit', function(event) {
+            event.preventDefault();
+            const url = document.getElementById('url-input').value;
+            const progressContainer = document.getElementById('progress-container');
+            const linksFound = document.getElementById('links-found');
+            const linksScanned = document.getElementById('links-scanned');
+            const itemsCrawled = document.getElementById('items-crawled');
+            const status = document.getElementById('status');
+            
+            progressContainer.style.display = 'block';
+            linksFound.textContent = 'Links Found: 0';
+            linksScanned.textContent = 'Links Scanned: 0';
+            itemsCrawled.textContent = 'Items Crawled: 0';
+            status.textContent = 'Status: Scanning...';
+
+            const source = new EventSource('/crawl?url=' + encodeURIComponent(url));
+            source.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.links_found !== undefined) {
+                    linksFound.textContent = `Links Found: ${data.links_found}`;
+                    linksScanned.textContent = `Links Scanned: ${data.links_scanned}`;
+                    itemsCrawled.textContent = `Items Crawled: ${data.items_crawled}`;
+                }
+                if (data.status === 'complete') {
+                    status.textContent = 'Status: Crawl Complete';
+                } else if (data.status === 'stored') {
+                    status.textContent = `Status: Stored ${data.items_crawled} Items`;
+                    source.close();
+                    // Redirect to search page after storing
+                    window.location.href = '/search';
+                }
+            };
+            source.onerror = function() {
+                status.textContent = 'Status: Error occurred during scan';
+                source.close();
+            };
+        });
+    </script>
 </body>
 </html>
