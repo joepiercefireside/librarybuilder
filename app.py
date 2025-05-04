@@ -87,22 +87,60 @@ def generate_embedding(text):
         logger.error(f"Error generating embedding: {e}")
         return None
 
-async def crawl_website(start_url):
-    """Crawl a website and extract text and PDFs with progress updates."""
+async def crawl_website_progress(start_url):
+    """Stream progress updates for website crawling."""
     async with AsyncWebCrawler(verbose=True) as crawler:
-        crawled_data = []
         visited_urls = set()
         to_visit = [start_url]
         base_domain = urllib.parse.urlparse(start_url).netloc
         links_found = 1  # Start with the initial URL
         links_scanned = 0
+        items_crawled = 0
+        
+        while to_visit and items_crawled < 10:  # Reduced limit for testing
+            url = to_visit.pop(0)
+            if url in visited_urls:
+                continue
+            visited_urls.add(url)
+            links_scanned += 1
+            
+            try:
+                result = await crawler.arun(url=url, follow_links=True, max_depth=2)
+                if result.success:
+                    content = result.markdown
+                    if content:
+                        items_crawled += 1
+                    
+                    # Add new links to visit (same domain)
+                    for link in result.links:
+                        if urllib.parse.urlparse(link).netloc == base_domain and link not in visited_urls and link not in to_visit:
+                            to_visit.append(link)
+                            links_found += 1
+                    
+                    # Yield progress update
+                    yield json.dumps({
+                        "links_found": links_found,
+                        "links_scanned": links_scanned,
+                        "items_crawled": items_crawled
+                    }) + "\n"
+            except Exception as e:
+                logger.error(f"Error crawling {url}: {e}")
+        
+        yield json.dumps({"status": "complete", "items_crawled": items_crawled}) + "\n"
+
+async def crawl_website_data(start_url):
+    """Collect crawled data for storage."""
+    async with AsyncWebCrawler(verbose=True) as crawler:
+        crawled_data = []
+        visited_urls = set()
+        to_visit = [start_url]
+        base_domain = urllib.parse.urlparse(start_url).netloc
         
         while to_visit and len(crawled_data) < 10:  # Reduced limit for testing
             url = to_visit.pop(0)
             if url in visited_urls:
                 continue
             visited_urls.add(url)
-            links_scanned += 1
             
             try:
                 result = await crawler.arun(url=url, follow_links=True, max_depth=2)
@@ -137,21 +175,12 @@ async def crawl_website(start_url):
                     for link in result.links:
                         if urllib.parse.urlparse(link).netloc == base_domain and link not in visited_urls and link not in to_visit:
                             to_visit.append(link)
-                            links_found += 1
-                    
-                    # Yield progress update
-                    yield json.dumps({
-                        "links_found": links_found,
-                        "links_scanned": links_scanned,
-                        "items_crawled": len(crawled_data)
-                    }) + "\n"
                     
                     # Free memory
                     torch.cuda.empty_cache() if torch.cuda.is_available() else None
             except Exception as e:
                 logger.error(f"Error crawling {url}: {e}")
         
-        yield json.dumps({"status": "complete", "items_crawled": len(crawled_data)}) + "\n"
         return crawled_data
 
 def extract_pdf_text(pdf_path):
@@ -242,27 +271,22 @@ def crawl():
                 # Stream progress updates via SSE
                 def generate():
                     async def run_crawl():
-                        crawled_data = []
-                        async for update in crawl_website(start_url):
+                        async for update in crawl_website_progress(start_url):
                             yield f"data: {update}\n\n"
-                            # Collect crawled data after streaming
-                            if json.loads(update).get("status") == "complete":
-                                async for data in crawl_website(start_url):
-                                    if "status" not in json.loads(data):
-                                        crawled_data.append(json.loads(data))
-                                # Store data in database
-                                conn = get_db_connection()
-                                cur = conn.cursor()
-                                query = """
-                                INSERT INTO documents (url, content, embedding, file_path)
-                                VALUES %s
-                                ON CONFLICT (url) DO NOTHING
-                                """
-                                execute_values(cur, query, crawled_data)
-                                conn.commit()
-                                cur.close()
-                                conn.close()
-                                yield f"data: {json.dumps({'status': 'stored', 'items_crawled': len(crawled_data)})}\n\n"
+                        # After progress streaming, collect and store data
+                        crawled_data = await crawl_website_data(start_url)
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        query = """
+                        INSERT INTO documents (url, content, embedding, file_path)
+                        VALUES %s
+                        ON CONFLICT (url) DO NOTHING
+                        """
+                        execute_values(cur, query, crawled_data)
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+                        yield f"data: {json.dumps({'status': 'stored', 'items_crawled': len(crawled_data)})}\n\n"
                     
                     loop.run_until_complete(run_crawl())
                 
