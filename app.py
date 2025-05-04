@@ -98,7 +98,7 @@ def generate_embedding(text):
         logger.info(f"Memory usage after embedding: {process.memory_info().rss / 1024 / 1024:.2f} MB")
         return embedding
     except Exception as e:
-        logger.error(f"Error generating embedding: {e}")
+        logger.error(f"Error generating embedding: {e}\n{traceback.format_exc()}")
         return None
 
 async def verify_playwright():
@@ -325,7 +325,7 @@ def logout():
 
 @app.route('/crawl', methods=['GET', 'POST'])
 @login_required
-def crawl():
+async def crawl():
     try:
         if request.method == 'POST':
             start_url = request.form.get('url')
@@ -339,30 +339,27 @@ def crawl():
             asyncio.set_event_loop(loop)
             try:
                 # Stream progress updates via SSE
-                def generate():
-                    async def run_crawl():
-                        try:
-                            async for update in crawl_website_progress(start_url):
-                                yield f"data: {update}\n\n"
-                            # After progress streaming, collect and store data
-                            crawled_data = await crawl_website_data(start_url)
-                            conn = get_db_connection()
-                            cur = conn.cursor()
-                            query = """
-                            INSERT INTO documents (url, content, embedding, file_path)
-                            VALUES %s
-                            ON CONFLICT (url) DO NOTHING
-                            """
-                            execute_values(cur, query, crawled_data)
-                            conn.commit()
-                            cur.close()
-                            conn.close()
-                            yield f"data: {json.dumps({'status': 'stored', 'items_crawled': len(crawled_data)})}\n\n"
-                        except Exception as e:
-                            logger.error(f"Error in run_crawl: {str(e)}\n{traceback.format_exc()}")
-                            yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
-                    
-                    loop.run_until_complete(run_crawl())
+                async def generate():
+                    try:
+                        async for update in crawl_website_progress(start_url):
+                            yield f"data: {update}\n\n"
+                        # After progress streaming, collect and store data
+                        crawled_data = await crawl_website_data(start_url)
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        query = """
+                        INSERT INTO documents (url, content, embedding, file_path)
+                        VALUES %s
+                        ON CONFLICT (url) DO NOTHING
+                        """
+                        execute_values(cur, query, crawled_data)
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+                        yield f"data: {json.dumps({'status': 'stored', 'items_crawled': len(crawled_data)})}\n\n"
+                    except Exception as e:
+                        logger.error(f"Error in run_crawl: {str(e)}\n{traceback.format_exc()}")
+                        yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
                 
                 return Response(generate(), mimetype='text/event-stream')
             finally:
