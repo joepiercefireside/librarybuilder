@@ -9,9 +9,9 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 import numpy as np
 from scipy.spatial.distance import cosine
-from crawl4ai import WebCrawler
+from crawl4ai.crawler import AsyncWebCrawler
 import urllib.parse
-import re
+import asyncio
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -66,54 +66,55 @@ def generate_embedding(text):
         outputs = model(**inputs)
     return outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
 
-def crawl_website(start_url):
+async def crawl_website(start_url):
     """Crawl a website and extract text and PDFs."""
-    crawler = WebCrawler()
-    crawler.warmup()
-    
-    crawled_data = []
-    visited_urls = set()
-    to_visit = [start_url]
-    base_domain = urllib.parse.urlparse(start_url).netloc
-    
-    while to_visit and len(crawled_data) < 100:  # Limit for testing
-        url = to_visit.pop(0)
-        if url in visited_urls:
-            continue
-        visited_urls.add(url)
+    async with AsyncWebCrawler(verbose=True) as crawler:
+        crawled_data = []
+        visited_urls = set()
+        to_visit = [start_url]
+        base_domain = urllib.parse.urlparse(start_url).netloc
         
-        try:
-            result = crawler.run(url=url, follow_links=True, max_depth=2)
-            if result.success:
-                content = result.markdown
-                if content:
-                    embedding = generate_embedding(content)
-                    crawled_data.append((url, content, embedding.tolist(), None))
-                
-                # Extract PDFs
-                for link in result.links:
-                    if link.endswith('.pdf'):
-                        pdf_path = f"data/pdfs/{urllib.parse.quote(link, safe='')}.pdf"
-                        os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
-                        with urlopen(link) as response, open(pdf_path, 'wb') as out_file:
-                            out_file.write(response.read())
-                        pdf_text = extract_pdf_text(pdf_path)  # Placeholder for PDF extraction
-                        if pdf_text:
-                            embedding = generate_embedding(pdf_text)
-                            crawled_data.append((link, pdf_text, embedding.tolist(), pdf_path))
-                
-                # Add new links to visit (same domain)
-                for link in result.links:
-                    if urllib.parse.urlparse(link).netloc == base_domain and link not in visited_urls:
-                        to_visit.append(link)
-        except Exception as e:
-            logger.error(f"Error crawling {url}: {e}")
-    
-    return crawled_data
+        while to_visit and len(crawled_data) < 100:  # Limit for testing
+            url = to_visit.pop(0)
+            if url in visited_urls:
+                continue
+            visited_urls.add(url)
+            
+            try:
+                result = await crawler.arun(url=url, follow_links=True, max_depth=2)
+                if result.success:
+                    content = result.markdown
+                    if content:
+                        embedding = generate_embedding(content)
+                        crawled_data.append((url, content, embedding.tolist(), None))
+                    
+                    # Extract PDFs (placeholder for downloading)
+                    for link in result.links:
+                        if link.endswith('.pdf'):
+                            pdf_path = f"data/pdfs/{urllib.parse.quote(link, safe='')}.pdf"
+                            os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+                            try:
+                                with urllib.request.urlopen(link) as response, open(pdf_path, 'wb') as out_file:
+                                    out_file.write(response.read())
+                                pdf_text = extract_pdf_text(pdf_path)  # Placeholder
+                                if pdf_text:
+                                    embedding = generate_embedding(pdf_text)
+                                    crawled_data.append((link, pdf_text, embedding.tolist(), pdf_path))
+                            except Exception as e:
+                                logger.error(f"Error downloading PDF {link}: {e}")
+                    
+                    # Add new links to visit (same domain)
+                    for link in result.links:
+                        if urllib.parse.urlparse(link).netloc == base_domain and link not in visited_urls:
+                            to_visit.append(link)
+            except Exception as e:
+                logger.error(f"Error crawling {url}: {e}")
+        
+        return crawled_data
 
 def extract_pdf_text(pdf_path):
     """Placeholder for PDF text extraction."""
-    return ""  # Implement using pdfplumber or PyPDF2 later
+    return ""  # Implement using pdfplumber later
 
 @app.route('/')
 def index():
@@ -146,7 +147,7 @@ def login():
         password = request.form.get('password')
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, email, password_hash FROM users WHERE id = %s", (email,))
+        cur.execute("SELECT id, email, password_hash FROM users WHERE email = %s", (email,))
         user = cur.fetchone()
         cur.close()
         conn.close()
@@ -172,7 +173,9 @@ def crawl():
             return render_template('crawl.html')
         
         logger.info(f"Crawling website: {start_url}")
-        crawled_data = crawl_website(start_url)
+        # Run async crawl in sync context
+        loop = asyncio.get_event_loop()
+        crawled_data = loop.run_until_complete(crawl_website(start_url))
         
         conn = get_db_connection()
         cur = conn.cursor()
