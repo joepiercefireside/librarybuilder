@@ -1,43 +1,4 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -45,16 +6,18 @@
     <title>Search - LibraryBuilder</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
+        body { background-color: #f3f4f6; }
         .prompt-output { max-height: none; overflow-y: auto; }
     </style>
 </head>
-<body class="bg-gray-100">
+<body>
     <nav class="bg-white shadow">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16">
                 <div class="flex">
                     <div class="flex-shrink-0 flex items-center">
-                        <a href="/" class="text-xl font-bold text-gray-800">LibraryBuilder</a>
+                        <img src="/static/logo.png" alt="LibraryBuilder Logo" class="h-8 w-auto">
+                        <a href="/" class="text-xl font-bold text-gray-800 ml-2">LibraryBuilder</a>
                     </div>
                     <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
                         <a href="/crawl" class="text-gray-500 hover:text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Crawl</a>
@@ -75,7 +38,7 @@
         {% endif %}
         <form method="POST" class="mt-4">
             <div class="flex space-x-4">
-                <input type="text" name="query" placeholder="Enter your question" class="flex-1 px-4 py-2 border rounded-md" value="{{ query | default('') }}">
+                <input type="text" name="query" placeholder="Enter your question" class="flex-1 px-4 py-2 border rounded-md focus:ring-indigo-500 focus:border-indigo-500" value="{{ query | default('') }}">
                 <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Search</button>
             </div>
         </form>
@@ -94,7 +57,7 @@
                     {% for result in results %}
                         <div class="bg-white p-6 rounded-lg shadow">
                             <h3 class="text-lg font-medium text-gray-900">
-                                <a href="{{ result[0] or result[2] }}" class="text-indigo-600">{{ result[0] or result[2] }}</a>
+                                <a href="{{ result[0] or result[2] }}" class="text-indigo-600 hover:underline">{{ result[0] or result[2] }}</a>
                             </h3>
                             <p class="mt-2 text-gray-600">{{ result[1][:200] }}...</p>
                         </div>

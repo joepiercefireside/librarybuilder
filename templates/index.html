@@ -5,14 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LibraryBuilder</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f3f4f6; }
+        .hero { background: linear-gradient(to right, #4f46e5, #7c3aed); color: white; }
+    </style>
 </head>
-<body class="bg-gray-100">
+<body>
     <nav class="bg-white shadow">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16">
                 <div class="flex">
                     <div class="flex-shrink-0 flex items-center">
-                        <a href="/" class="text-xl font-bold text-gray-800">LibraryBuilder</a>
+                        <img src="/static/logo.png" alt="LibraryBuilder Logo" class="h-8 w-auto">
+                        <a href="/" class="text-xl font-bold text-gray-800 ml-2">LibraryBuilder</a>
                     </div>
                     <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
                         <a href="/crawl" class="text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Crawl</a>
@@ -26,10 +31,19 @@
         </div>
     </nav>
 
+    <div class="hero py-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <h1 class="text-4xl font-bold">Welcome to LibraryBuilder</h1>
+            <p class="mt-4 text-lg">Crawl websites and build a knowledge base for AI-powered queries.</p>
+            <a href="/crawl" class="mt-6 inline-block px-6 py-3 bg-white text-indigo-600 font-semibold rounded-md shadow hover:bg-gray-100">Start Crawling</a>
+        </div>
+    </div>
+
     <div class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <h1 class="text-2xl font-bold text-gray-900">Welcome to LibraryBuilder</h1>
-        <p class="mt-4 text-gray-600">Crawl websites and build a knowledge base for AI queries.</p>
-        <a href="/crawl" class="mt-4 inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Start Crawling</a>
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-2xl font-semibold text-gray-900">Build Your Knowledge Base</h2>
+            <p class="mt-4 text-gray-600">LibraryBuilder lets you crawl websites, extract content, and create a searchable knowledge base for AI-driven insights.</p>
+        </div>
     </div>
 </body>
 </html>

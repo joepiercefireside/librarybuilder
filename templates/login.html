@@ -1,68 +1,47 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - LibraryBuilder</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f3f4f6; }
+    </style>
 </head>
-<body class="bg-gray-100">
-    <div class="max-w-md mx-auto mt-10">
-        <h1 class="text-2xl font-bold text-gray-900">Login</h1>
+<body>
+    <nav class="bg-white shadow">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex">
+                    <div class="flex-shrink-0 flex items-center">
+                        <img src="/static/logo.png" alt="LibraryBuilder Logo" class="h-8 w-auto">
+                        <a href="/" class="text-xl font-bold text-gray-800 ml-2">LibraryBuilder</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="max-w-md mx-auto mt-10 bg-white p-8 rounded-lg shadow">
+        <h1 class="text-2xl font-bold text-gray-900 text-center">Login</h1>
         {% if error %}
-            <p class="text-red-500">{{ error }}</p>
+            <p class="text-red-500 text-center">{{ error }}</p>
         {% endif %}
-        <form method="POST" class="mt-4">
-            <div class="mb-4">
-                <label class="block text-gray-700">Email</label>
-                <input type="email" name="email" class="w-full px-4 py-2 border rounded-md" required>
+        <form method="POST" class="mt-6 space-y-6">
+            <div>
+                <label for="email" class="block text-sm font-medium text-gray-700">Email</label>
+                <input type="email" name="email" id="email" class="w-full px-4 py-2 border rounded-md focus:ring-indigo-500 focus:border-indigo-500" required>
             </div>
-            <div class="mb-4">
-                <label class="block text-gray-700">Password</label>
-                <input type="password" name="password" class="w-full px-4 py-2 border rounded-md" required>
+            <div>
+                <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+                <input type="password" name="password" id="password" class="w-full px-4 py-2 border rounded-md focus:ring-indigo-500 focus:border-indigo-500" required>
             </div>
-            <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Login</button>
+            <div>
+                <button type="submit" class="w-full px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Login</button>
+            </div>
         </form>
-        <p class="mt-4">Don't have an account? <a href="/register" class="text-indigo-600">Register</a></p>
+        <p class="mt-4 text-center text-sm text-gray-600">Don't have an account? <a href="/register" class="text-indigo-600 hover:underline">Register</a></p>
     </div>
 </body>
 </html>
