@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 import asyncio
 import json
+import psutil
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -84,12 +85,15 @@ def load_user(user_id):
 def generate_embedding(text):
     """Generate embedding for a single text."""
     try:
+        process = psutil.Process()
+        logger.info(f"Memory usage before embedding: {process.memory_info().rss / 1024 / 1024:.2f} MB")
         tokenizer, model = load_embedding_model()
         inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
         with torch.no_grad():
             outputs = model(**inputs)
         embedding = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
         unload_embedding_model()  # Free memory after embedding
+        logger.info(f"Memory usage after embedding: {process.memory_info().rss / 1024 / 1024:.2f} MB")
         return embedding
     except Exception as e:
         logger.error(f"Error generating embedding: {e}")
@@ -98,6 +102,8 @@ def generate_embedding(text):
 async def crawl_website_progress(start_url):
     """Stream progress updates for website crawling."""
     logger.info(f"Starting progress stream for {start_url}")
+    process = psutil.Process()
+    logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
     async with AsyncWebCrawler(verbose=True) as crawler:
         visited_urls = set()
         to_visit = [start_url]
@@ -139,6 +145,8 @@ async def crawl_website_progress(start_url):
                     }) + "\n"
             except Exception as e:
                 logger.error(f"Error crawling {url}: {e}")
+                yield json.dumps({"status": "error", "message": str(e)}) + "\n"
+                return
         
         logger.info(f"Crawl progress complete: items_crawled={items_crawled}")
         yield json.dumps({"status": "complete", "items_crawled": items_crawled}) + "\n"
@@ -146,6 +154,8 @@ async def crawl_website_progress(start_url):
 async def crawl_website_data(start_url):
     """Collect crawled data for storage."""
     logger.info(f"Starting data crawl for {start_url}")
+    process = psutil.Process()
+    logger.info(f"Memory usage before Vitality: {process.memory_info().rss / 1024 / 1024:.2f} MB")
     async with AsyncWebCrawler(verbose=True) as crawler:
         crawled_data = []
         visited_urls = set()
