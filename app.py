@@ -37,10 +37,18 @@ def load_mobilebert_model():
         logger.info("MobileBERT model loaded.")
     return tokenizer, model
 
-# Database connection function
+# Database connection function with error handling
 def get_db_connection():
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    return conn
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        logger.info("Database connection established.")
+        return conn
+    except KeyError as e:
+        logger.error(f"Missing DATABASE_URL environment variable: {e}")
+        raise
+    except psycopg2.Error as e:
+        logger.error(f"Database connection failed: {e}")
+        raise
 
 class User(UserMixin):
     def __init__(self, id, email):
@@ -49,23 +57,33 @@ class User(UserMixin):
 
 @login_manager.user_loader
 def load_user(user_id):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, email FROM users WHERE id = %s", (user_id,))
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
-    if user:
-        return User(user[0], user[1])
-    return None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, email FROM users WHERE id = %s", (user_id,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        if user:
+            logger.info(f"User loaded: ID {user_id}")
+            return User(user[0], user[1])
+        logger.warning(f"No user found for ID {user_id}")
+        return None
+    except Exception as e:
+        logger.error(f"Error loading user {user_id}: {e}")
+        return None
 
 def generate_embedding(text):
     """Generate embedding for a single text."""
-    tokenizer, model = load_mobilebert_model()
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
-    with torch.no_grad():
-        outputs = model(**inputs)
-    return outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+    try:
+        tokenizer, model = load_mobilebert_model()
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        return outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+    except Exception as e:
+        logger.error(f"Error generating embedding: {e}")
+        return None
 
 async def crawl_website(start_url):
     """Crawl a website and extract text and PDFs."""
@@ -87,7 +105,10 @@ async def crawl_website(start_url):
                     content = result.markdown
                     if content:
                         embedding = generate_embedding(content)
-                        crawled_data.append((url, content, embedding.tolist(), None))
+                        if embedding is not None:
+                            crawled_data.append((url, content, embedding.tolist(), None))
+                        else:
+                            logger.warning(f"No embedding generated for {url}")
                     
                     # Extract PDFs (placeholder for downloading)
                     for link in result.links:
@@ -100,7 +121,10 @@ async def crawl_website(start_url):
                                 pdf_text = extract_pdf_text(pdf_path)  # Placeholder
                                 if pdf_text:
                                     embedding = generate_embedding(pdf_text)
-                                    crawled_data.append((link, pdf_text, embedding.tolist(), pdf_path))
+                                    if embedding is not None:
+                                        crawled_data.append((link, pdf_text, embedding.tolist(), pdf_path))
+                                    else:
+                                        logger.warning(f"No embedding generated for PDF {link}")
                             except Exception as e:
                                 logger.error(f"Error downloading PDF {link}: {e}")
                     
@@ -119,119 +143,149 @@ def extract_pdf_text(pdf_path):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    try:
+        logger.info("Accessing index page")
+        return render_template('index.html')
+    except Exception as e:
+        logger.error(f"Error rendering index page: {e}")
+        return "Internal Server Error", 500
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
-        if cur.fetchone():
-            flash('Email already registered.', 'error')
-        else:
-            password_hash = generate_password_hash(password)
-            cur.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s)", (email, password_hash))
-            conn.commit()
-            flash('Registration successful! Please log in.', 'success')
-            return redirect(url_for('login'))
-        cur.close()
-        conn.close()
-    return render_template('register.html')
+    try:
+        if request.method == 'POST':
+            email = request.form.get('email')
+            password = request.form.get('password')
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+            if cur.fetchone():
+                flash('Email already registered.', 'error')
+            else:
+                password_hash = generate_password_hash(password)
+                cur.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s)", (email, password_hash))
+                conn.commit()
+                flash('Registration successful! Please log in.', 'success')
+                return redirect(url_for('login'))
+            cur.close()
+            conn.close()
+        return render_template('register.html')
+    except Exception as e:
+        logger.error(f"Error in register endpoint: {e}")
+        return "Internal Server Error", 500
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT id, email, password_hash FROM users WHERE email = %s", (email,))
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-        if user and check_password_hash(user[2], password):
-            login_user(User(user[0], user[1]))
-            return redirect(url_for('index'))
-        flash('Invalid email or password.', 'error')
-    return render_template('login.html')
+    try:
+        if request.method == 'POST':
+            email = request.form.get('email')
+            password = request.form.get('password')
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT id, email, password_hash FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+            cur.close()
+            conn.close()
+            if user and check_password_hash(user[2], password):
+                login_user(User(user[0], user[1]))
+                logger.info(f"User {email} logged in successfully")
+                return redirect(url_for('index'))
+            flash('Invalid email or password.', 'error')
+        return render_template('login.html')
+    except Exception as e:
+        logger.error(f"Error in login endpoint: {e}")
+        return "Internal Server Error", 500
 
 @app.route('/logout')
 @login_required
 def logout():
-    logout_user()
-    return redirect(url_for('login'))
+    try:
+        logout_user()
+        logger.info("User logged out")
+        return redirect(url_for('login'))
+    except Exception as e:
+        logger.error(f"Error in logout endpoint: {e}")
+        return "Internal Server Error", 500
 
 @app.route('/crawl', methods=['GET', 'POST'])
 @login_required
 def crawl():
-    if request.method == 'POST':
-        start_url = request.form.get('url')
-        if not start_url:
-            flash('URL cannot be empty.', 'error')
-            return render_template('crawl.html')
+    try:
+        if request.method == 'POST':
+            start_url = request.form.get('url')
+            if not start_url:
+                flash('URL cannot be empty.', 'error')
+                return render_template('crawl.html')
+            
+            logger.info(f"Crawling website: {start_url}")
+            # Create a new event loop for async operation
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                crawled_data = loop.run_until_complete(crawl_website(start_url))
+            finally:
+                loop.close()
+            
+            conn = get_db_connection()
+            cur = conn.cursor()
+            query = """
+            INSERT INTO documents (url, content, embedding, file_path)
+            VALUES %s
+            ON CONFLICT (url) DO NOTHING
+            """
+            execute_values(cur, query, crawled_data)
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            flash(f"Crawled {len(crawled_data)} items.", 'success')
+            return redirect(url_for('search'))
         
-        logger.info(f"Crawling website: {start_url}")
-        # Create a new event loop for async operation
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            crawled_data = loop.run_until_complete(crawl_website(start_url))
-        finally:
-            loop.close()
-        
-        conn = get_db_connection()
-        cur = conn.cursor()
-        query = """
-        INSERT INTO documents (url, content, embedding, file_path)
-        VALUES %s
-        ON CONFLICT (url) DO NOTHING
-        """
-        execute_values(cur, query, crawled_data)
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        flash(f"Crawled {len(crawled_data)} items.", 'success')
-        return redirect(url_for('search'))
-    
-    return render_template('crawl.html')
+        return render_template('crawl.html')
+    except Exception as e:
+        logger.error(f"Error in crawl endpoint: {e}")
+        return "Internal Server Error", 500
 
 @app.route('/search', methods=['GET', 'POST'])
 @login_required
 def search():
-    if request.method == 'POST':
-        query = request.form.get('query')
-        if not query:
-            flash('Query cannot be empty.', 'error')
-            return render_template('search.html')
+    try:
+        if request.method == 'POST':
+            query = request.form.get('query')
+            if not query:
+                flash('Query cannot be empty.', 'error')
+                return render_template('search.html')
+            
+            logger.info(f"Search query: {query}")
+            query_embedding = generate_embedding(query)
+            if query_embedding is None:
+                flash('Failed to generate query embedding.', 'error')
+                return render_template('search.html')
+            
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("""
+            SELECT url, content, file_path, embedding
+            FROM documents
+            ORDER BY embedding <=> %s::vector
+            LIMIT 5
+            """, (query_embedding.tolist(),))
+            results = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            # Mock LLM answer
+            answer = f"Answer to '{query}':\n\n"
+            for result in results:
+                url, content, file_path, _ = result
+                answer += f"- {content[:100]}... (Source: {url or file_path})\n"
+            
+            return render_template('search.html', results=results, query=query, answer=answer)
         
-        logger.info(f"Search query: {query}")
-        query_embedding = generate_embedding(query)
-        
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-        SELECT url, content, file_path, embedding
-        FROM documents
-        ORDER BY embedding <=> %s::vector
-        LIMIT 5
-        """, (query_embedding.tolist(),))
-        results = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        # Mock LLM answer
-        answer = f"Answer to '{query}':\n\n"
-        for result in results:
-            url, content, file_path, _ = result
-            answer += f"- {content[:100]}... (Source: {url or file_path})\n"
-        
-        return render_template('search.html', results=results, query=query, answer=answer)
-    
-    return render_template('search.html')
+        return render_template('search.html')
+    except Exception as e:
+        logger.error(f"Error in search endpoint: {e}")
+        return "Internal Server Error", 500
 
 if __name__ == '__main__':
     app.run(debug=True)
