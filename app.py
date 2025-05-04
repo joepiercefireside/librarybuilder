@@ -9,8 +9,9 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 import numpy as np
 from scipy.spatial.distance import cosine
-from crawl4ai.crawler import AsyncWebCrawler
+from crawl4ai import AsyncWebCrawler
 import urllib.parse
+import urllib.request
 import asyncio
 
 app = Flask(__name__)
