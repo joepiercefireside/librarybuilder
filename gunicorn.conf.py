@@ -5,3 +5,6 @@ threads = 1
 worker_class = 'sync'
 timeout = 120
 bind = f"0.0.0.0:{os.environ.get('PORT', '10000')}"
+loglevel = 'debug'
+accesslog = '-'
+errorlog = '-'

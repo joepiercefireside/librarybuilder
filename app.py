@@ -15,6 +15,7 @@ import urllib.request
 import asyncio
 import json
 import psutil
+from playwright.async_api import async_playwright
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -99,11 +100,29 @@ def generate_embedding(text):
         logger.error(f"Error generating embedding: {e}")
         return None
 
+async def verify_playwright():
+    """Verify Playwright binary availability."""
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            await browser.close()
+            logger.info("Playwright binary verification successful.")
+            return True
+    except Exception as e:
+        logger.error(f"Playwright verification failed: {e}")
+        return False
+
 async def crawl_website_progress(start_url):
     """Stream progress updates for website crawling."""
     logger.info(f"Starting progress stream for {start_url}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+    
+    # Verify Playwright binaries
+    if not await verify_playwright():
+        yield json.dumps({"status": "error", "message": "Playwright binary not available"}) + "\n"
+        return
+    
     async with AsyncWebCrawler(verbose=True) as crawler:
         visited_urls = set()
         to_visit = [start_url]
@@ -155,7 +174,13 @@ async def crawl_website_data(start_url):
     """Collect crawled data for storage."""
     logger.info(f"Starting data crawl for {start_url}")
     process = psutil.Process()
-    logger.info(f"Memory usage before Vitality: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+    logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+    
+    # Verify Playwright binaries
+    if not await verify_playwright():
+        logger.error("Cannot crawl: Playwright binary not available")
+        return []
+    
     async with AsyncWebCrawler(verbose=True) as crawler:
         crawled_data = []
         visited_urls = set()
