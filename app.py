@@ -174,9 +174,13 @@ def crawl():
             return render_template('crawl.html')
         
         logger.info(f"Crawling website: {start_url}")
-        # Run async crawl in sync context
-        loop = asyncio.get_event_loop()
-        crawled_data = loop.run_until_complete(crawl_website(start_url))
+        # Create a new event loop for async operation
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            crawled_data = loop.run_until_complete(crawl_website(start_url))
+        finally:
+            loop.close()
         
         conn = get_db_connection()
         cur = conn.cursor()
