@@ -8,4 +8,4 @@ torch==2.3.0 -f https://download.pytorch.org/whl/cpu/torch_stable.html
 scipy==1.13.0
 tqdm==4.66.4
 crawl4ai==0.6.2
-playwright==1.44.0
+playwright==1.49.0
