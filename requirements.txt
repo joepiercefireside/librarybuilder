@@ -7,4 +7,4 @@ gunicorn==21.2.0
 torch==2.3.0 -f https://download.pytorch.org/whl/cpu/torch_stable.html
 scipy==1.13.0
 tqdm==4.66.4
-crawl4ai==0.2.9
+crawl4ai==0.6.2
