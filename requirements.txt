@@ -1,0 +1,10 @@
+flask==2.3.2
+flask-login==0.6.3
+psycopg2-binary==2.9.9
+transformers==4.41.2
+numpy==1.26.4
+gunicorn==21.2.0
+torch==2.3.0 -f https://download.pytorch.org/whl/cpu/torch_stable.html
+scipy==1.13.0
+tqdm==4.66.4
+crawl4ai==0.2.9
