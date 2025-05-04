@@ -38,6 +38,13 @@ def load_embedding_model():
         logger.info("all-MiniLM-L6-v2 model loaded.")
     return tokenizer, model
 
+def unload_embedding_model():
+    global tokenizer, model
+    tokenizer = None
+    model = None
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    logger.info("Unloaded all-MiniLM-L6-v2 model to free memory.")
+
 # Database connection function with error handling
 def get_db_connection():
     try:
@@ -82,6 +89,7 @@ def generate_embedding(text):
         with torch.no_grad():
             outputs = model(**inputs)
         embedding = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+        unload_embedding_model()  # Free memory after embedding
         return embedding
     except Exception as e:
         logger.error(f"Error generating embedding: {e}")
@@ -89,6 +97,7 @@ def generate_embedding(text):
 
 async def crawl_website_progress(start_url):
     """Stream progress updates for website crawling."""
+    logger.info(f"Starting progress stream for {start_url}")
     async with AsyncWebCrawler(verbose=True) as crawler:
         visited_urls = set()
         to_visit = [start_url]
@@ -100,22 +109,27 @@ async def crawl_website_progress(start_url):
         while to_visit and items_crawled < 10:  # Reduced limit for testing
             url = to_visit.pop(0)
             if url in visited_urls:
+                logger.debug(f"Skipping already visited URL: {url}")
                 continue
             visited_urls.add(url)
             links_scanned += 1
+            logger.debug(f"Scanning URL: {url}")
             
             try:
                 result = await crawler.arun(url=url, follow_links=True, max_depth=2)
+                logger.debug(f"Crawl result for {url}: success={result.success}")
                 if result.success:
                     content = result.markdown
                     if content:
                         items_crawled += 1
+                        logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
                     
                     # Add new links to visit (same domain)
                     for link in result.links:
                         if urllib.parse.urlparse(link).netloc == base_domain and link not in visited_urls and link not in to_visit:
                             to_visit.append(link)
                             links_found += 1
+                            logger.debug(f"New link found: {link}, links_found={links_found}")
                     
                     # Yield progress update
                     yield json.dumps({
@@ -126,10 +140,12 @@ async def crawl_website_progress(start_url):
             except Exception as e:
                 logger.error(f"Error crawling {url}: {e}")
         
+        logger.info(f"Crawl progress complete: items_crawled={items_crawled}")
         yield json.dumps({"status": "complete", "items_crawled": items_crawled}) + "\n"
 
 async def crawl_website_data(start_url):
     """Collect crawled data for storage."""
+    logger.info(f"Starting data crawl for {start_url}")
     async with AsyncWebCrawler(verbose=True) as crawler:
         crawled_data = []
         visited_urls = set()
@@ -139,17 +155,21 @@ async def crawl_website_data(start_url):
         while to_visit and len(crawled_data) < 10:  # Reduced limit for testing
             url = to_visit.pop(0)
             if url in visited_urls:
+                logger.debug(f"Skipping already visited URL: {url}")
                 continue
             visited_urls.add(url)
+            logger.debug(f"Processing URL: {url}")
             
             try:
                 result = await crawler.arun(url=url, follow_links=True, max_depth=2)
+                logger.debug(f"Data crawl result for {url}: success={result.success}")
                 if result.success:
                     content = result.markdown
                     if content:
                         embedding = generate_embedding(content)
                         if embedding is not None:
                             crawled_data.append((url, content, embedding.tolist(), None))
+                            logger.debug(f"Stored data for {url}")
                         else:
                             logger.warning(f"No embedding generated for {url}")
                     
@@ -175,12 +195,14 @@ async def crawl_website_data(start_url):
                     for link in result.links:
                         if urllib.parse.urlparse(link).netloc == base_domain and link not in visited_urls and link not in to_visit:
                             to_visit.append(link)
-                    
-                    # Free memory
-                    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                            logger.debug(f"Added link to crawl: {link}")
+                
+                # Free memory
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
             except Exception as e:
                 logger.error(f"Error crawling {url}: {e}")
         
+        logger.info(f"Data crawl complete: items_crawled={len(crawled_data)}")
         return crawled_data
 
 def extract_pdf_text(pdf_path):
