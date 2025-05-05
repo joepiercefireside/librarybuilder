@@ -99,8 +99,8 @@ def generate_embedding(text):
         logger.error(f"Error generating embedding: {e}\n{traceback.format_exc()}")
         return None
 
-async def crawl_website(start_url):
-    """Crawl website using Playwright and stream progress updates."""
+async def crawl_website_data(start_url):
+    """Crawl website using Playwright and collect data."""
     logger.info(f"Starting crawl for {start_url}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -149,24 +149,30 @@ async def crawl_website(start_url):
                             links_found += 1
                             logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
                     
-                    yield json.dumps({
+                    # Yield progress update
+                    yield {
                         "links_found": links_found,
                         "links_scanned": links_scanned,
                         "items_crawled": items_crawled
-                    }) + "\n"
+                    }
                     
                     await page.close()
                     logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                 except Exception as e:
                     logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
-                    yield json.dumps({"status": "error", "message": str(e)}) + "\n"
+                    yield {"status": "error", "message": str(e)}
                     return
                 
             logger.info(f"Crawl complete: items_crawled={items_crawled}")
-            yield json.dumps({"status": "complete", "items_crawled": items_crawled}) + "\n"
+            yield {"status": "complete", "items_crawled": items_crawled}
             return crawled_data
         finally:
             await browser.close()
+
+async def crawl_website(start_url):
+    """Stream SSE progress updates for website crawling."""
+    async for update in crawl_website_data(start_url):
+        yield f"data: {json.dumps(update)}\n\n"
 
 @app.route('/')
 def index():
@@ -249,10 +255,11 @@ async def crawl():
                 try:
                     crawled_data = []
                     async for update in crawl_website(start_url):
-                        if isinstance(update, str):
-                            yield update
-                        else:
-                            crawled_data.extend(update)
+                        yield update
+                        if isinstance(update, dict) and "status" in update and update["status"] == "error":
+                            return
+                        if isinstance(update, dict) and "items_crawled" in update:
+                            crawled_data = update.get("crawled_data", crawled_data)
                     
                     # Store crawled data in database
                     if crawled_data:
