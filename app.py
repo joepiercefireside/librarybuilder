@@ -13,8 +13,7 @@ import urllib.parse
 import sqlite3
 import json
 import psutil
-from crawl4ai import WebCrawler
-from crawl4ai.extraction_strategy import DFSDeepCrawlStrategy
+from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import traceback
 
@@ -100,17 +99,17 @@ def load_user(user_id):
         logger.error(f"Error loading user {user_id}: {e}")
         return None
 
-def clean_content(content):
-    """Extract clean text from content using BeautifulSoup."""
+def clean_content(html):
+    """Extract clean text from HTML using BeautifulSoup."""
     try:
-        soup = BeautifulSoup(content, 'html.parser')
+        soup = BeautifulSoup(html, 'html.parser')
         for element in soup(['script', 'style', 'header', 'footer', 'nav']):
             element.decompose()
         text = soup.get_text(separator=' ', strip=True)
         return ' '.join(text.split())[:1000]  # Limit to 1000 chars
     except Exception as e:
         logger.error(f"Error cleaning content: {e}\n{traceback.format_exc()}")
-        return content[:1000]
+        return html[:1000]
 
 def generate_embedding(text):
     """Generate embedding for a single text."""
@@ -130,7 +129,7 @@ def generate_embedding(text):
         return None
 
 def crawl_website(start_url, user_id):
-    """Crawl website using Crawl4AI WebCrawler and store progress."""
+    """Crawl website using Playwright synchronously and store progress."""
     logger.info(f"Starting crawl for {start_url} by user {user_id}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -151,54 +150,76 @@ def crawl_website(start_url, user_id):
     conn.commit()
     
     try:
-        crawler = WebCrawler()
-        crawler.warmup()
-        while to_visit and items_crawled < max_items:
-            url = to_visit.pop(0)
-            if url in visited_urls or not url.startswith(('http://', 'https://')):
-                logger.debug(f"Skipping invalid or visited URL: {url}")
-                continue
-            visited_urls.add(url)
-            links_scanned += 1
-            logger.debug(f"Scanning URL: {url}")
-            
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'])
             try:
-                result = crawler.run(
-                    url=url,
-                    follow_links=True,
-                    max_depth=2,
-                    strategy=DFSDeepCrawlStrategy(max_pages=10)
-                )
-                if result.success and result.markdown:
-                    content = result.markdown
-                    embedding = generate_embedding(content)
-                    if embedding is not None:
-                        items_crawled += 1
-                        cleaned_content = clean_content(content)
-                        crawled_data.append((url, cleaned_content, embedding.tolist(), None))
-                        logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
-                
-                for link in result.links:
-                    absolute_url = urllib.parse.urljoin(url, link)
-                    if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
-                        to_visit.append(absolute_url)
-                        links_found += 1
-                        logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
-                
-                c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ?",
-                          (links_found, links_scanned, items_crawled, "running", user_id, start_url))
-                conn.commit()
-            except Exception as e:
-                logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
+                while to_visit and items_crawled < max_items:
+                    url = to_visit.pop(0)
+                    if url in visited_urls or not url.startswith(('http://', 'https://')):
+                        logger.debug(f"Skipping invalid or visited URL: {url}")
+                        continue
+                    visited_urls.add(url)
+                    links_scanned += 1
+                    logger.debug(f"Scanning URL: {url}")
+                    
+                    try:
+                        page = browser.new_page()
+                        page.goto(url, timeout=30000)
+                        page.wait_for_load_state('networkidle', timeout=30000)
+                        page.wait_for_timeout(2000)  # Wait for dynamic content
+                        
+                        # Extract content
+                        content = page.content()
+                        if content:
+                            embedding = generate_embedding(content)
+                            if embedding is not None:
+                                items_crawled += 1
+                                cleaned_content = clean_content(content)
+                                crawled_data.append((url, cleaned_content, embedding.tolist(), None))
+                                logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
+                        
+                        # Extract all links, including dynamic ones
+                        links = page.evaluate('''() => {
+                            const urls = [];
+                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav]').forEach(el => {
+                                let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav');
+                                if (!url && el.getAttribute('onclick')) {
+                                    const match = el.getAttribute('onclick').match(/location\.href=['"]([^'"]+)['"]/);
+                                    if (match) url = match[1];
+                                }
+                                if (url) urls.push(url);
+                            });
+                            return urls;
+                        }''')
+                        for link in links:
+                            absolute_url = urllib.parse.urljoin(url, link)
+                            if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
+                                to_visit.append(absolute_url)
+                                links_found += 1
+                                logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
+                        
+                        # Update progress
+                        c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ?",
+                                  (links_found, links_scanned, items_crawled, "running", user_id, start_url))
+                        conn.commit()
+                        
+                        page.close()  # Close page immediately to free memory
+                        logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                    except Exception as e:
+                        logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
+                        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
+                                  (f"error: {str(e)}", user_id, start_url))
+                        conn.commit()
+                        conn.close()
+                        return crawled_data
+                logger.info(f"Crawl complete: items_crawled={items_crawled}")
                 c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
-                          (f"error: {str(e)}", user_id, start_url))
+                          ("complete", user_id, start_url))
                 conn.commit()
+            finally:
+                browser.close()
                 conn.close()
-                return crawled_data
-        logger.info(f"Crawl complete: items_crawled={items_crawled}")
-        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
-                  ("complete", user_id, start_url))
-        conn.commit()
+        return crawled_data
     except Exception as e:
         logger.error(f"Unexpected error in crawl_website: {str(e)}\n{traceback.format_exc()}")
         c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
@@ -206,9 +227,6 @@ def crawl_website(start_url, user_id):
         conn.commit()
         conn.close()
         return crawled_data
-    finally:
-        conn.close()
-    return crawled_data
 
 @app.route('/')
 def index():
