@@ -13,11 +13,8 @@ import urllib.parse
 import asyncio
 import json
 import psutil
-from scrapy.crawler import CrawlerRunner
-from scrapy.utils.project import get_project_settings
-from scrapy import Spider
-import traceback
 from playwright.async_api import async_playwright
+import traceback
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -102,74 +99,74 @@ def generate_embedding(text):
         logger.error(f"Error generating embedding: {e}\n{traceback.format_exc()}")
         return None
 
-class WebsiteSpider(Spider):
-    name = 'website_spider'
+async def crawl_website(start_url):
+    """Crawl website using Playwright and stream progress updates."""
+    logger.info(f"Starting crawl for {start_url}")
+    process = psutil.Process()
+    logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
     
-    def __init__(self, start_url, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.start_urls = [start_url]
-        self.base_domain = urllib.parse.urlparse(start_url).netloc
-        self.visited_urls = set()
-        self.links_found = 1  # Start with the initial URL
-        self.links_scanned = 0
-        self.items_crawled = 0
-        self.parsed_items = []
-        self.max_items = 10  # Limit for testing
-        self.progress = []
-
-    async def parse(self, response):
-        self.links_scanned += 1
-        self.visited_urls.add(response.url)
-        logger.debug(f"Scanning URL: {response.url}")
-        
+    visited_urls = set()
+    to_visit = [start_url]
+    base_domain = urllib.parse.urlparse(start_url).netloc
+    links_found = 1  # Start with the initial URL
+    links_scanned = 0
+    items_crawled = 0
+    max_items = 10  # Limit for testing
+    crawled_data = []
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
         try:
-            # Extract content (using Playwright for dynamic content)
-            content = response.css('body').get(default='').strip()
-            if content:
-                self.items_crawled += 1
-                embedding = generate_embedding(content)
-                if embedding is not None:
-                    item = {
-                        'url': response.url,
-                        'content': content,
-                        'embedding': embedding.tolist(),
-                        'file_path': None
-                    }
-                    self.parsed_items.append(item)
-                    yield item
-                else:
-                    logger.warning(f"No embedding generated for {response.url}")
+            while to_visit and items_crawled < max_items:
+                url = to_visit.pop(0)
+                if url in visited_urls:
+                    logger.debug(f"Skipping already visited URL: {url}")
+                    continue
+                visited_urls.add(url)
+                links_scanned += 1
+                logger.debug(f"Scanning URL: {url}")
                 
-                self.progress.append({
-                    "links_found": self.links_found,
-                    "links_scanned": self.links_scanned,
-                    "items_crawled": self.items_crawled
-                })
-            
-            # Follow links (same domain)
-            for link in response.css('a::attr(href)').getall():
-                absolute_url = response.urljoin(link)
-                if urllib.parse.urlparse(absolute_url).netloc == self.base_domain and absolute_url not in self.visited_urls and self.items_crawled < self.max_items:
-                    self.links_found += 1
-                    self.visited_urls.add(absolute_url)
-                    logger.debug(f"New link found: {absolute_url}, links_found={self.links_found}")
-                    yield response.follow(
-                        absolute_url,
-                        callback=self.parse,
-                        meta={'playwright': True, 'playwright_include_page': True}
-                    )
-            
-            self.progress.append({
-                "links_found": self.links_found,
-                "links_scanned": self.links_scanned,
-                "items_crawled": self.items_crawled
-            })
-        except Exception as e:
-            logger.error(f"Error parsing {response.url}: {str(e)}\n{traceback.format_exc()}")
-            self.progress.append({
-                "status": "error",
-                "message": str(e)
-            })
+                try:
+                    page = await browser.new_page()
+                    await page.goto(url, timeout=30000)
+                    content = await page.content()
+                    await page.wait_for_load_state('networkidle', timeout=30000)
+                    
+                    # Extract content
+                    if content:
+                        embedding = generate_embedding(content)
+                        if embedding is not None:
+                            items_crawled += 1
+                            crawled_data.append((url, content, embedding.tolist(), None))
+                            logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
+                    
+                    # Extract links
+                    links = await page.eval_on_selector_all('a[href]', 'elements => elements.map(el => el.href)')
+                    for link in links:
+                        absolute_url = urllib.parse.urljoin(url, link)
+                        if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
+                            to_visit.append(absolute_url)
+                            links_found += 1
+                            logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
+                    
+                    yield json.dumps({
+                        "links_found": links_found,
+                        "links_scanned": links_scanned,
+                        "items_crawled": items_crawled
+                    }) + "\n"
+                    
+                    await page.close()
+                    logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                except Exception as e:
+                    logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
+                    yield json.dumps({"status": "error", "message": str(e)}) + "\n"
+                    return
+                
+            logger.info(f"Crawl complete: items_crawled={items_crawled}")
+            yield json.dumps({"status": "complete", "items_crawled": items_crawled}) + "\n"
+            return crawled_data
+        finally:
+            await browser.close()
 
 @app.route('/')
 def index():
@@ -248,58 +245,34 @@ async def crawl():
                 return render_template('crawl.html')
             
             logger.info(f"Crawling website: {start_url}")
-            # Initialize Scrapy settings
-            settings = get_project_settings()
-            settings.set('ITEM_PIPELINES', {})
-            settings.set('PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT', 30000)  # 30 seconds
-            settings.set('DOWNLOAD_HANDLERS', {
-                'http': 'scrapy_playwright.handler.PlaywrightHandler',
-                'https': 'scrapy_playwright.handler.PlaywrightHandler',
-            })
-            settings.set('TWISTED_REACTOR', 'twisted.internet.asyncioreactor.AsyncioSelectorReactor')
-            settings.set('PLAYWRIGHT_LAUNCH_OPTIONS', {'headless': True})
-            
-            # Initialize Playwright
-            async with async_playwright() as p:
-                logger.debug("Playwright initialized for Scrapy")
-                # Run Scrapy spider
-                runner = CrawlerRunner(settings)
-                spider = WebsiteSpider(start_url=start_url)
-                
-                async def generate():
-                    try:
-                        # Start Scrapy crawl
-                        deferred = await runner.crawl(spider)
-                        logger.debug(f"Scrapy crawl completed: {deferred}")
-                        
-                        # Stream progress updates via SSE
-                        for update in spider.progress:
-                            yield f"data: {json.dumps(update)}\n\n"
-                        
-                        # Store crawled data in database
-                        if spider.items_crawled > 0:
-                            conn = get_db_connection()
-                            cur = conn.cursor()
-                            query = """
-                            INSERT INTO documents (url, content, embedding, file_path)
-                            VALUES %s
-                            ON CONFLICT (url) DO NOTHING
-                            """
-                            execute_values(cur, query, [
-                                (item['url'], item['content'], item['embedding'], item['file_path'])
-                                for item in spider.parsed_items
-                            ])
-                            conn.commit()
-                            cur.close()
-                            conn.close()
-                            yield f"data: {json.dumps({'status': 'stored', 'items_crawled': spider.items_crawled})}\n\n"
+            async def generate():
+                try:
+                    crawled_data = []
+                    async for update in crawl_website(start_url):
+                        if isinstance(update, str):
+                            yield update
                         else:
-                            yield f"data: {json.dumps({'status': 'complete', 'items_crawled': 0})}\n\n"
-                    except Exception as e:
-                        logger.error(f"Error in Scrapy crawl: {str(e)}\n{traceback.format_exc()}")
-                        yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
-                
-                return Response(generate(), mimetype='text/event-stream')
+                            crawled_data.extend(update)
+                    
+                    # Store crawled data in database
+                    if crawled_data:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        query = """
+                        INSERT INTO documents (url, content, embedding, file_path)
+                        VALUES %s
+                        ON CONFLICT (url) DO NOTHING
+                        """
+                        execute_values(cur, query, crawled_data)
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+                        yield f"data: {json.dumps({'status': 'stored', 'items_crawled': len(crawled_data)})}\n\n"
+                except Exception as e:
+                    logger.error(f"Error in crawl: {str(e)}\n{traceback.format_exc()}")
+                    yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+            
+            return Response(generate(), mimetype='text/event-stream')
         
         return render_template('crawl.html')
     except Exception as e:
