@@ -9,6 +9,7 @@ gevent==24.2.1
 torch==2.3.0 -f https://download.pytorch.org/whl/cpu/torch_stable.html
 scipy==1.13.0
 tqdm==4.66.4
-crawl4ai==0.6.2
+scrapy==2.11.2
+scrapy-playwright==0.0.41
 playwright==1.49.0
 psutil==6.1.1
