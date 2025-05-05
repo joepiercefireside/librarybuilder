@@ -13,9 +13,10 @@ import urllib.parse
 import sqlite3
 import json
 import psutil
-from playwright.sync_api import sync_playwright
+from crawl4ai.crawler import WebCrawler
+from crawl4ai.extraction_strategy import DFSDeepCrawlStrategy
+from bs4 import BeautifulSoup
 import traceback
-from crawl4ai import WebCrawler
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -47,9 +48,13 @@ def load_embedding_model():
     global tokenizer, model
     if tokenizer is None or model is None:
         logger.info("Loading all-MiniLM-L6-v2 model...")
-        tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
-        model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
-        logger.info("all-MiniLM-L6-v2 model loaded.")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
+            model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
+            logger.info("all-MiniLM-L6-v2 model loaded.")
+        except Exception as e:
+            logger.error(f"Failed to load model: {str(e)}\n{traceback.format_exc()}")
+            raise
     return tokenizer, model
 
 def unload_embedding_model():
@@ -95,6 +100,18 @@ def load_user(user_id):
         logger.error(f"Error loading user {user_id}: {e}")
         return None
 
+def clean_content(content):
+    """Extract clean text from content using BeautifulSoup."""
+    try:
+        soup = BeautifulSoup(content, 'html.parser')
+        for element in soup(['script', 'style', 'header', 'footer', 'nav']):
+            element.decompose()
+        text = soup.get_text(separator=' ', strip=True)
+        return ' '.join(text.split())[:1000]  # Limit to 1000 chars
+    except Exception as e:
+        logger.error(f"Error cleaning content: {e}\n{traceback.format_exc()}")
+        return content[:1000]
+
 def generate_embedding(text):
     """Generate embedding for a single text."""
     try:
@@ -113,6 +130,7 @@ def generate_embedding(text):
         return None
 
 def crawl_website(start_url, user_id):
+    """Crawl website using Crawl4AI WebCrawler and store progress."""
     logger.info(f"Starting crawl for {start_url} by user {user_id}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -120,10 +138,10 @@ def crawl_website(start_url, user_id):
     visited_urls = set()
     to_visit = [start_url]
     base_domain = urllib.parse.urlparse(start_url).netloc
-    links_found = 1
+    links_found = 1  # Start with the initial URL
     links_scanned = 0
     items_crawled = 0
-    max_items = 10
+    max_items = 10  # Limit for testing
     crawled_data = []
     
     conn = sqlite3.connect('progress.db')
@@ -145,23 +163,27 @@ def crawl_website(start_url, user_id):
             logger.debug(f"Scanning URL: {url}")
             
             try:
-                result = crawler.run(url=url, follow_links=True, max_depth=2)
-                if result.success:
+                result = crawler.run(
+                    url=url,
+                    follow_links=True,
+                    max_depth=2,
+                    strategy=DFSDeepCrawlStrategy(max_pages=10)
+                )
+                if result.success and result.markdown:
                     content = result.markdown
-                    if content:
-                        embedding = generate_embedding(content)
-                        if embedding is not None:
-                            items_crawled += 1
-                            cleaned_content = clean_content(content)
-                            crawled_data.append((url, cleaned_content, embedding.tolist(), None))
-                            logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
-                    
-                    for link in result.links:
-                        absolute_url = urllib.parse.urljoin(url, link)
-                        if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
-                            to_visit.append(absolute_url)
-                            links_found += 1
-                            logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
+                    embedding = generate_embedding(content)
+                    if embedding is not None:
+                        items_crawled += 1
+                        cleaned_content = clean_content(content)
+                        crawled_data.append((url, cleaned_content, embedding.tolist(), None))
+                        logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
+                
+                for link in result.links:
+                    absolute_url = urllib.parse.urljoin(url, link)
+                    if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
+                        to_visit.append(absolute_url)
+                        links_found += 1
+                        logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
                 
                 c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ?",
                           (links_found, links_scanned, items_crawled, "running", user_id, start_url))
@@ -177,6 +199,13 @@ def crawl_website(start_url, user_id):
         c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
                   ("complete", user_id, start_url))
         conn.commit()
+    except Exception as e:
+        logger.error(f"Unexpected error in crawl_website: {str(e)}\n{traceback.format_exc()}")
+        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
+                  (f"error: {str(e)}", user_id, start_url))
+        conn.commit()
+        conn.close()
+        return crawled_data
     finally:
         conn.close()
     return crawled_data
