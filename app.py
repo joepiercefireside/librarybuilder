@@ -13,10 +13,11 @@ import urllib.parse
 import asyncio
 import json
 import psutil
-from scrapy.crawler import CrawlerProcess
+from scrapy.crawler import CrawlerRunner
 from scrapy.utils.project import get_project_settings
 from scrapy import Spider
 import traceback
+from playwright.async_api import async_playwright
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -112,10 +113,11 @@ class WebsiteSpider(Spider):
         self.links_found = 1  # Start with the initial URL
         self.links_scanned = 0
         self.items_crawled = 0
+        self.parsed_items = []
         self.max_items = 10  # Limit for testing
         self.progress = []
 
-    def parse(self, response):
+    async def parse(self, response):
         self.links_scanned += 1
         self.visited_urls.add(response.url)
         logger.debug(f"Scanning URL: {response.url}")
@@ -127,12 +129,14 @@ class WebsiteSpider(Spider):
                 self.items_crawled += 1
                 embedding = generate_embedding(content)
                 if embedding is not None:
-                    yield {
+                    item = {
                         'url': response.url,
                         'content': content,
                         'embedding': embedding.tolist(),
                         'file_path': None
                     }
+                    self.parsed_items.append(item)
+                    yield item
                 else:
                     logger.warning(f"No embedding generated for {response.url}")
                 
@@ -152,7 +156,7 @@ class WebsiteSpider(Spider):
                     yield response.follow(
                         absolute_url,
                         callback=self.parse,
-                        meta={'playwright': True}  # Enable Playwright for dynamic content
+                        meta={'playwright': True, 'playwright_include_page': True}
                     )
             
             self.progress.append({
@@ -253,45 +257,49 @@ async def crawl():
                 'https': 'scrapy_playwright.handler.PlaywrightHandler',
             })
             settings.set('TWISTED_REACTOR', 'twisted.internet.asyncioreactor.AsyncioSelectorReactor')
+            settings.set('PLAYWRIGHT_LAUNCH_OPTIONS', {'headless': True})
             
-            # Run Scrapy spider
-            process = CrawlerProcess(settings)
-            spider = WebsiteSpider(start_url=start_url)
-            process.crawl(spider)
-            
-            async def generate():
-                try:
-                    # Start Scrapy process
-                    process.start()
-                    
-                    # Stream progress updates via SSE
-                    for update in spider.progress:
-                        yield f"data: {json.dumps(update)}\n\n"
-                    
-                    # Store crawled data in database
-                    if spider.items_crawled > 0:
-                        conn = get_db_connection()
-                        cur = conn.cursor()
-                        query = """
-                        INSERT INTO documents (url, content, embedding, file_path)
-                        VALUES %s
-                        ON CONFLICT (url) DO NOTHING
-                        """
-                        execute_values(cur, query, [
-                            (item['url'], item['content'], item['embedding'], item['file_path'])
-                            for item in spider.parsed_items
-                        ])
-                        conn.commit()
-                        cur.close()
-                        conn.close()
-                        yield f"data: {json.dumps({'status': 'stored', 'items_crawled': spider.items_crawled})}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'status': 'complete', 'items_crawled': 0})}\n\n"
-                except Exception as e:
-                    logger.error(f"Error in Scrapy crawl: {str(e)}\n{traceback.format_exc()}")
-                    yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
-            
-            return Response(generate(), mimetype='text/event-stream')
+            # Initialize Playwright
+            async with async_playwright() as p:
+                logger.debug("Playwright initialized for Scrapy")
+                # Run Scrapy spider
+                runner = CrawlerRunner(settings)
+                spider = WebsiteSpider(start_url=start_url)
+                
+                async def generate():
+                    try:
+                        # Start Scrapy crawl
+                        deferred = await runner.crawl(spider)
+                        logger.debug(f"Scrapy crawl completed: {deferred}")
+                        
+                        # Stream progress updates via SSE
+                        for update in spider.progress:
+                            yield f"data: {json.dumps(update)}\n\n"
+                        
+                        # Store crawled data in database
+                        if spider.items_crawled > 0:
+                            conn = get_db_connection()
+                            cur = conn.cursor()
+                            query = """
+                            INSERT INTO documents (url, content, embedding, file_path)
+                            VALUES %s
+                            ON CONFLICT (url) DO NOTHING
+                            """
+                            execute_values(cur, query, [
+                                (item['url'], item['content'], item['embedding'], item['file_path'])
+                                for item in spider.parsed_items
+                            ])
+                            conn.commit()
+                            cur.close()
+                            conn.close()
+                            yield f"data: {json.dumps({'status': 'stored', 'items_crawled': spider.items_crawled})}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'status': 'complete', 'items_crawled': 0})}\n\n"
+                    except Exception as e:
+                        logger.error(f"Error in Scrapy crawl: {str(e)}\n{traceback.format_exc()}")
+                        yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+                
+                return Response(generate(), mimetype='text/event-stream')
         
         return render_template('crawl.html')
     except Exception as e:
