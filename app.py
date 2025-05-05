@@ -164,8 +164,7 @@ async def crawl_website_data(start_url):
                     return
                 
             logger.info(f"Crawl complete: items_crawled={items_crawled}")
-            yield {"status": "complete", "items_crawled": items_crawled}
-            return crawled_data
+            yield {"status": "complete", "items_crawled": items_crawled, "crawled_data": crawled_data}
         finally:
             await browser.close()
 
