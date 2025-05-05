@@ -12,3 +12,4 @@ tqdm==4.66.4
 playwright==1.49.0
 psutil==6.1.1
 beautifulsoup4==4.12.3
+requests==2.31.0

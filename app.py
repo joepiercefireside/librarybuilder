@@ -16,6 +16,7 @@ import psutil
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import traceback
+import requests
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -128,6 +129,35 @@ def generate_embedding(text):
         logger.error(f"Error generating embedding: {e}\n{traceback.format_exc()}")
         return None
 
+def query_grok_api(query, context):
+    """Query xAI Grok API for a summary response."""
+    try:
+        api_key = os.environ.get('XAI_API_KEY')
+        if not api_key:
+            logger.error("XAI_API_KEY environment variable not set")
+            return "Error: xAI API key not configured"
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "grok",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Based on the following context, answer the question: {query}\n\nContext: {context}"
+                }
+            ],
+            "max_tokens": 500
+        }
+        response = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()['choices'][0]['message']['content']
+    except Exception as e:
+        logger.error(f"Error querying xAI Grok API: {str(e)}\n{traceback.format_exc()}")
+        return f"Error querying xAI API: {str(e)}"
+
 def crawl_website(start_url, user_id):
     """Crawl website using Playwright synchronously and store progress."""
     logger.info(f"Starting crawl for {start_url} by user {user_id}")
@@ -181,8 +211,8 @@ def crawl_website(start_url, user_id):
                         # Extract all links, including dynamic ones
                         links = page.evaluate('''() => {
                             const urls = [];
-                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav]').forEach(el => {
-                                let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav');
+                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url]').forEach(el => {
+                                let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url');
                                 if (!url && el.getAttribute('onclick')) {
                                     const match = el.getAttribute('onclick').match(/location\.href=['"]([^'"]+)['"]/);
                                     if (match) url = match[1];
@@ -381,14 +411,20 @@ def search():
             cur.close()
             conn.close()
             
-            # Mock LLM answer
-            answer = f"Answer to '{query}':\n\n"
-            if results:
-                for result in results:
-                    url, content, file_path, _ = result
-                    answer += f"- {content[:100]}... (Source: {url or file_path})\n"
+            # Generate AI summary using xAI Grok API
+            context = "\n\n".join([result[1] for result in results])
+            answer = query_grok_api(query, context)
+            if not answer.startswith("Error"):
+                answer = f"Answer to '{query}':\n\n{answer}\n\nRelevant Documents:"
             else:
-                answer += "No relevant content found."
+                answer = f"Answer to '{query}':\n\nNo AI summary available due to API error.\n\nRelevant Documents:"
+            
+            for result in results:
+                url, content, file_path, _ = result
+                answer += f"\n- {content[:100]}... (Source: {url or file_path})"
+            
+            if not results:
+                answer += "\nNo relevant content found."
             
             return render_template('search.html', results=results, query=query, answer=answer)
         
