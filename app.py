@@ -105,7 +105,9 @@ async def verify_playwright():
     """Verify Playwright binary availability."""
     try:
         async with async_playwright() as p:
+            logger.debug(f"Playwright context initialized: {p}")
             browser = await p.chromium.launch()
+            logger.debug(f"Chromium browser launched: {browser}")
             await browser.close()
             logger.info("Playwright binary verification successful.")
             return True
@@ -125,7 +127,9 @@ async def crawl_website_progress(start_url):
         return
     
     try:
+        logger.debug("Initializing AsyncWebCrawler")
         async with AsyncWebCrawler(verbose=True) as crawler:
+            logger.debug(f"AsyncWebCrawler initialized: {crawler}")
             visited_urls = set()
             to_visit = [start_url]
             base_domain = urllib.parse.urlparse(start_url).netloc
@@ -143,8 +147,9 @@ async def crawl_website_progress(start_url):
                 logger.debug(f"Scanning URL: {url}")
                 
                 try:
+                    logger.debug(f"Running crawler for {url}")
                     result = await crawler.arun(url=url, follow_links=True, max_depth=2)
-                    logger.debug(f"Crawl result for {url}: success={result.success}")
+                    logger.debug(f"Crawl result for {url}: success={result.success}, links={len(result.links)}")
                     if result.success:
                         content = result.markdown
                         if content:
@@ -189,7 +194,9 @@ async def crawl_website_data(start_url):
         return []
     
     try:
+        logger.debug("Initializing AsyncWebCrawler for data crawl")
         async with AsyncWebCrawler(verbose=True) as crawler:
+            logger.debug(f"AsyncWebCrawler initialized: {crawler}")
             crawled_data = []
             visited_urls = set()
             to_visit = [start_url]
@@ -204,8 +211,9 @@ async def crawl_website_data(start_url):
                 logger.debug(f"Processing URL: {url}")
                 
                 try:
+                    logger.debug(f"Running crawler for {url}")
                     result = await crawler.arun(url=url, follow_links=True, max_depth=2)
-                    logger.debug(f"Data crawl result for {url}: success={result.success}")
+                    logger.debug(f"Data crawl result for {url}: success={result.success}, links={len(result.links)}")
                     if result.success:
                         content = result.markdown
                         if content:
@@ -334,11 +342,7 @@ async def crawl():
                 return render_template('crawl.html')
             
             logger.info(f"Crawling website: {start_url}")
-            # Create a new event loop for async operation
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             try:
-                # Stream progress updates via SSE
                 async def generate():
                     try:
                         async for update in crawl_website_progress(start_url):
@@ -358,12 +362,13 @@ async def crawl():
                         conn.close()
                         yield f"data: {json.dumps({'status': 'stored', 'items_crawled': len(crawled_data)})}\n\n"
                     except Exception as e:
-                        logger.error(f"Error in run_crawl: {str(e)}\n{traceback.format_exc()}")
+                        logger.error(f"Error in generate: {str(e)}\n{traceback.format_exc()}")
                         yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
                 
                 return Response(generate(), mimetype='text/event-stream')
-            finally:
-                loop.close()
+            except Exception as e:
+                logger.error(f"Error setting up SSE stream: {str(e)}\n{traceback.format_exc()}")
+                return "Internal Server Error", 500
         
         return render_template('crawl.html')
     except Exception as e:
