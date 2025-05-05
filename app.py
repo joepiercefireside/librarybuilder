@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, Response
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import psycopg2
 from psycopg2.extras import execute_values
@@ -10,10 +10,10 @@ import torch
 import numpy as np
 from scipy.spatial.distance import cosine
 import urllib.parse
-import asyncio
+import sqlite3
 import json
 import psutil
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
 import traceback
 
 app = Flask(__name__)
@@ -23,12 +23,23 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s:%(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 logger = logging.getLogger(__name__)
 
 # Initialize embedding model and tokenizer lazily
 tokenizer = None
 model = None
+
+# Initialize SQLite database for progress tracking
+def init_progress_db():
+    conn = sqlite3.connect('progress.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS progress
+                 (user_id TEXT, url TEXT, links_found INTEGER, links_scanned INTEGER, items_crawled INTEGER, status TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_progress_db()
 
 def load_embedding_model():
     global tokenizer, model
@@ -99,9 +110,9 @@ def generate_embedding(text):
         logger.error(f"Error generating embedding: {e}\n{traceback.format_exc()}")
         return None
 
-async def crawl_website_data(start_url):
-    """Crawl website using Playwright and collect data."""
-    logger.info(f"Starting crawl for {start_url}")
+def crawl_website(start_url, user_id):
+    """Crawl website using Playwright synchronously and store progress."""
+    logger.info(f"Starting crawl for {start_url} by user {user_id}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
     
@@ -114,64 +125,77 @@ async def crawl_website_data(start_url):
     max_items = 10  # Limit for testing
     crawled_data = []
     
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        try:
-            while to_visit and items_crawled < max_items:
-                url = to_visit.pop(0)
-                if url in visited_urls:
-                    logger.debug(f"Skipping already visited URL: {url}")
-                    continue
-                visited_urls.add(url)
-                links_scanned += 1
-                logger.debug(f"Scanning URL: {url}")
-                
-                try:
-                    page = await browser.new_page()
-                    await page.goto(url, timeout=30000)
-                    content = await page.content()
-                    await page.wait_for_load_state('networkidle', timeout=30000)
+    conn = sqlite3.connect('progress.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO progress (user_id, url, links_found, links_scanned, items_crawled, status) VALUES (?, ?, ?, ?, ?, ?)",
+              (user_id, start_url, links_found, links_scanned, items_crawled, "running"))
+    conn.commit()
+    
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                while to_visit and items_crawled < max_items:
+                    url = to_visit.pop(0)
+                    if url in visited_urls:
+                        logger.debug(f"Skipping already visited URL: {url}")
+                        continue
+                    visited_urls.add(url)
+                    links_scanned += 1
+                    logger.debug(f"Scanning URL: {url}")
                     
-                    # Extract content
-                    if content:
-                        embedding = generate_embedding(content)
-                        if embedding is not None:
-                            items_crawled += 1
-                            crawled_data.append((url, content, embedding.tolist(), None))
-                            logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
-                    
-                    # Extract links
-                    links = await page.eval_on_selector_all('a[href]', 'elements => elements.map(el => el.href)')
-                    for link in links:
-                        absolute_url = urllib.parse.urljoin(url, link)
-                        if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
-                            to_visit.append(absolute_url)
-                            links_found += 1
-                            logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
-                    
-                    # Yield progress update
-                    yield {
-                        "links_found": links_found,
-                        "links_scanned": links_scanned,
-                        "items_crawled": items_crawled
-                    }
-                    
-                    await page.close()
-                    logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-                except Exception as e:
-                    logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
-                    yield {"status": "error", "message": str(e)}
-                    return
-                
-            logger.info(f"Crawl complete: items_crawled={items_crawled}")
-            yield {"status": "complete", "items_crawled": items_crawled, "crawled_data": crawled_data}
-        finally:
-            await browser.close()
-
-async def crawl_website(start_url):
-    """Stream SSE progress updates for website crawling."""
-    async for update in crawl_website_data(start_url):
-        yield f"data: {json.dumps(update)}\n\n"
+                    try:
+                        page = browser.new_page()
+                        page.goto(url, timeout=30000)
+                        page.wait_for_load_state('networkidle', timeout=30000)
+                        content = page.content()
+                        
+                        # Extract content
+                        if content:
+                            embedding = generate_embedding(content)
+                            if embedding is not None:
+                                items_crawled += 1
+                                crawled_data.append((url, content, embedding.tolist(), None))
+                                logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
+                        
+                        # Extract links
+                        links = page.eval_on_selector_all('a[href]', 'elements => elements.map(el => el.href)')
+                        for link in links:
+                            absolute_url = urllib.parse.urljoin(url, link)
+                            if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
+                                to_visit.append(absolute_url)
+                                links_found += 1
+                                logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
+                        
+                        # Update progress
+                        c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ?",
+                                  (links_found, links_scanned, items_crawled, "running", user_id, start_url))
+                        conn.commit()
+                        
+                        page.close()
+                        logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                    except Exception as e:
+                        logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
+                        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
+                                  (f"error: {str(e)}", user_id, start_url))
+                        conn.commit()
+                        conn.close()
+                        return crawled_data
+                logger.info(f"Crawl complete: items_crawled={items_crawled}")
+                c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
+                          ("complete", user_id, start_url))
+                conn.commit()
+            finally:
+                browser.close()
+                conn.close()
+        return crawled_data
+    except Exception as e:
+        logger.error(f"Unexpected error in crawl_website: {str(e)}\n{traceback.format_exc()}")
+        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
+                  (f"error: {str(e)}", user_id, start_url))
+        conn.commit()
+        conn.close()
+        return crawled_data
 
 @app.route('/')
 def index():
@@ -241,7 +265,7 @@ def logout():
 
 @app.route('/crawl', methods=['GET', 'POST'])
 @login_required
-async def crawl():
+def crawl():
     try:
         if request.method == 'POST':
             start_url = request.form.get('url')
@@ -249,41 +273,54 @@ async def crawl():
                 flash('URL cannot be empty.', 'error')
                 return render_template('crawl.html')
             
-            logger.info(f"Crawling website: {start_url}")
-            async def generate():
-                try:
-                    crawled_data = []
-                    async for update in crawl_website(start_url):
-                        yield update
-                        if isinstance(update, dict) and "status" in update and update["status"] == "error":
-                            return
-                        if isinstance(update, dict) and "items_crawled" in update:
-                            crawled_data = update.get("crawled_data", crawled_data)
-                    
-                    # Store crawled data in database
-                    if crawled_data:
-                        conn = get_db_connection()
-                        cur = conn.cursor()
-                        query = """
-                        INSERT INTO documents (url, content, embedding, file_path)
-                        VALUES %s
-                        ON CONFLICT (url) DO NOTHING
-                        """
-                        execute_values(cur, query, crawled_data)
-                        conn.commit()
-                        cur.close()
-                        conn.close()
-                        yield f"data: {json.dumps({'status': 'stored', 'items_crawled': len(crawled_data)})}\n\n"
-                except Exception as e:
-                    logger.error(f"Error in crawl: {str(e)}\n{traceback.format_exc()}")
-                    yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+            logger.info(f"Starting crawl for {start_url} by user {current_user.id}")
+            crawled_data = crawl_website(start_url, current_user.id)
             
-            return Response(generate(), mimetype='text/event-stream')
+            if crawled_data:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                query = """
+                INSERT INTO documents (url, content, embedding, file_path)
+                VALUES %s
+                ON CONFLICT (url) DO NOTHING
+                """
+                execute_values(cur, query, crawled_data)
+                conn.commit()
+                cur.close()
+                conn.close()
+                flash(f"Stored {len(crawled_data)} items.", 'success')
+            else:
+                flash("No items crawled.", 'error')
+            
+            return redirect(url_for('crawl'))
         
         return render_template('crawl.html')
     except Exception as e:
         logger.error(f"Error in crawl endpoint: {e}\n{traceback.format_exc()}")
-        return "Internal Server Error", 500
+        flash(f"Error during crawl: {str(e)}", 'error')
+        return render_template('crawl.html')
+
+@app.route('/crawl_progress', methods=['GET'])
+@login_required
+def crawl_progress():
+    try:
+        conn = sqlite3.connect('progress.db')
+        c = conn.cursor()
+        c.execute("SELECT links_found, links_scanned, items_crawled, status FROM progress WHERE user_id = ? ORDER BY rowid DESC LIMIT 1",
+                  (current_user.id,))
+        result = c.fetchone()
+        conn.close()
+        if result:
+            return jsonify({
+                "links_found": result[0],
+                "links_scanned": result[1],
+                "items_crawled": result[2],
+                "status": result[3]
+            })
+        return jsonify({"links_found": 0, "links_scanned": 0, "items_crawled": 0, "status": "none"})
+    except Exception as e:
+        logger.error(f"Error in crawl_progress: {e}\n{traceback.format_exc()}")
+        return jsonify({"status": f"error: {str(e)}"})
 
 @app.route('/search', methods=['GET', 'POST'])
 @login_required
@@ -327,15 +364,15 @@ def search():
         return "Internal Server Error", 500
 
 @app.route('/test_playwright')
-async def test_playwright():
+def test_playwright():
     try:
         logger.info("Starting Playwright test")
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await browser.new_page()
-            await page.goto('https://example.com')
-            content = await page.content()
-            await browser.close()
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto('https://example.com')
+            content = page.content()
+            browser.close()
             logger.info("Playwright test completed successfully")
             return f"Playwright test successful: {len(content)} bytes"
     except Exception as e:
