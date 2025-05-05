@@ -13,7 +13,7 @@ import urllib.parse
 import sqlite3
 import json
 import psutil
-from crawl4ai.crawler import WebCrawler
+from crawl4ai import WebCrawler
 from crawl4ai.extraction_strategy import DFSDeepCrawlStrategy
 from bs4 import BeautifulSoup
 import traceback
