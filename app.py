@@ -18,6 +18,7 @@ import traceback
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour session timeout
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
@@ -148,6 +149,9 @@ def crawl_website(start_url, user_id):
                         page = browser.new_page()
                         page.goto(url, timeout=30000)
                         page.wait_for_load_state('networkidle', timeout=30000)
+                        
+                        # Wait for dynamic content
+                        page.wait_for_timeout(2000)  # Wait 2 seconds for JavaScript
                         content = page.content()
                         
                         # Extract content
@@ -158,14 +162,15 @@ def crawl_website(start_url, user_id):
                                 crawled_data.append((url, content, embedding.tolist(), None))
                                 logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
                         
-                        # Extract links
-                        links = page.eval_on_selector_all('a[href]', 'elements => elements.map(el => el.href)')
+                        # Extract all links, including dynamic ones
+                        links = page.eval_on_selector_all('a[href], [onclick], [data-href]', 'elements => elements.map(el => el.href || el.getAttribute("data-href") || el.getAttribute("onclick"))')
                         for link in links:
-                            absolute_url = urllib.parse.urljoin(url, link)
-                            if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
-                                to_visit.append(absolute_url)
-                                links_found += 1
-                                logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
+                            if link and isinstance(link, str):
+                                absolute_url = urllib.parse.urljoin(url, link.split("'")[1] if link.startswith("window.location") else link)
+                                if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
+                                    to_visit.append(absolute_url)
+                                    links_found += 1
+                                    logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
                         
                         # Update progress
                         c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ?",
@@ -243,7 +248,7 @@ def login():
             cur.close()
             conn.close()
             if user and check_password_hash(user[2], password):
-                login_user(User(user[0], user[1]))
+                login_user(User(user[0], user[1]), remember=True)
                 logger.info(f"User {email} logged in successfully")
                 return redirect(url_for('index'))
             flash('Invalid email or password.', 'error')
@@ -352,9 +357,12 @@ def search():
             
             # Mock LLM answer
             answer = f"Answer to '{query}':\n\n"
-            for result in results:
-                url, content, file_path, _ = result
-                answer += f"- {content[:100]}... (Source: {url or file_path})\n"
+            if results:
+                for result in results:
+                    url, content, file_path, _ = result
+                    answer += f"- {content[:100]}... (Source: {url or file_path})\n"
+            else:
+                answer += "No relevant content found."
             
             return render_template('search.html', results=results, query=query, answer=answer)
         
@@ -378,6 +386,10 @@ def test_playwright():
     except Exception as e:
         logger.error(f"Playwright test failed: {str(e)}\n{traceback.format_exc()}")
         return f"Playwright test failed: {str(e)}"
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
     app.run(debug=True)
