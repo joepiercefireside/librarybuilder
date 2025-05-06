@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup
 import traceback
 from openai import OpenAI
 import tenacity
+import time
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -90,7 +91,7 @@ def load_user(user_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, email FROM users WHERE id = %s", (user_id,))
+        cur.execute("SELECT id, email FROM users WHERE id = %s", (int(user_id),))
         user = cur.fetchone()
         cur.close()
         conn.close()
@@ -358,12 +359,12 @@ async def libraries():
             if not name:
                 flash('Library name cannot be empty.', 'error')
             else:
-                cur.execute("INSERT INTO libraries (user_id, name) VALUES (%s, %s)", (current_user.id, name))
+                cur.execute("INSERT INTO libraries (user_id, name) VALUES (%s, %s)", (int(current_user.id), name))
                 conn.commit()
                 flash('Library created successfully.', 'success')
                 return redirect(url_for('libraries'))
         
-        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (current_user.id,))
+        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (int(current_user.id),))
         libraries = cur.fetchall()
         cur.close()
         conn.close()
@@ -385,12 +386,12 @@ async def prompts():
             if not name or not content:
                 flash('Prompt name and content cannot be empty.', 'error')
             else:
-                cur.execute("INSERT INTO prompts (user_id, name, content) VALUES (%s, %s, %s)", (current_user.id, name, content))
+                cur.execute("INSERT INTO prompts (user_id, name, content) VALUES (%s, %s, %s)", (int(current_user.id), name, content))
                 conn.commit()
                 flash('Prompt created successfully.', 'success')
                 return redirect(url_for('prompts'))
         
-        cur.execute("SELECT id, name, content FROM prompts WHERE user_id = %s", (current_user.id,))
+        cur.execute("SELECT id, name, content FROM prompts WHERE user_id = %s", (int(current_user.id),))
         prompts = cur.fetchall()
         cur.close()
         conn.close()
@@ -406,7 +407,7 @@ async def crawl():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (current_user.id,))
+        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (int(current_user.id),))
         libraries = cur.fetchall()
         cur.close()
         conn.close()
@@ -450,31 +451,36 @@ async def crawl():
 
 @app.route('/crawl_progress', methods=['GET'])
 @login_required
-async def crawl_progress():
-    async def stream_progress():
-        while True:
-            try:
-                conn = sqlite3.connect('progress.db')
-                c = conn.cursor()
-                c.execute("SELECT links_found, links_scanned, items_crawled, status FROM progress WHERE user_id = ? ORDER BY rowid DESC LIMIT 1",
-                          (current_user.id,))
-                result = c.fetchone()
-                conn.close()
-                if result:
-                    data = {
-                        "links_found": result[0],
-                        "links_scanned": result[1],
-                        "items_crawled": result[2],
-                        "status": result[3]
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
-                if result and result[3] in ["complete", "error"]:
+def crawl_progress():
+    def stream_progress():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            while True:
+                try:
+                    conn = sqlite3.connect('progress.db')
+                    c = conn.cursor()
+                    c.execute("SELECT links_found, links_scanned, items_crawled, status FROM progress WHERE user_id = ? ORDER BY rowid DESC LIMIT 1",
+                              (current_user.id,))
+                    result = c.fetchone()
+                    conn.close()
+                    if result:
+                        data = {
+                            "links_found": result[0],
+                            "links_scanned": result[1],
+                            "items_crawled": result[2],
+                            "status": result[3]
+                        }
+                        yield f"data: {json.dumps(data)}\n\n"
+                    if result and result[3] in ["complete", "error"]:
+                        break
+                    time.sleep(1)
+                except Exception as e:
+                    logger.error(f"Error in crawl_progress: {e}\n{traceback.format_exc()}")
+                    yield f"data: {{'status': 'error: {str(e)}'}}\n\n"
                     break
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Error in crawl_progress: {e}\n{traceback.format_exc()}")
-                yield f"data: {{'status': 'error: {str(e)}'}}\n\n"
-                break
+        finally:
+            loop.close()
     
     return Response(stream_progress(), mimetype='text/event-stream')
 
@@ -484,9 +490,9 @@ async def search():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (current_user.id,))
+        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (int(current_user.id),))
         libraries = cur.fetchall()
-        cur.execute("SELECT id, name, content FROM prompts WHERE user_id = %s", (current_user.id,))
+        cur.execute("SELECT id, name, content FROM prompts WHERE user_id = %s", (int(current_user.id),))
         prompts = cur.fetchall()
         cur.close()
         conn.close()
@@ -516,7 +522,7 @@ async def search():
             """, (int(library_id), query_embedding.tolist()))
             results = cur.fetchall()
             
-            cur.execute("SELECT content FROM prompts WHERE id = %s AND user_id = %s", (int(prompt_id), current_user.id))
+            cur.execute("SELECT content FROM prompts WHERE id = %s AND user_id = %s", (int(prompt_id), int(current_user.id)))
             prompt = cur.fetchone()
             cur.close()
             conn.close()

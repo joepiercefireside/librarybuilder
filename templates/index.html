@@ -1,49 +1,31 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LibraryBuilder</title>
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #f3f4f6; }
-        .hero { background: linear-gradient(to right, #4f46e5, #7c3aed); color: white; }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <nav class="bg-white shadow">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex">
-                    <div class="flex-shrink-0 flex items-center">
-                        <img src="/static/logo.png" alt="LibraryBuilder Logo" class="h-8 w-auto">
-                        <a href="/" class="text-xl font-bold text-gray-800 ml-2">LibraryBuilder</a>
-                    </div>
-                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
-                        <a href="/crawl" class="text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Crawl</a>
-                        <a href="/search" class="text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Search</a>
-                    </div>
-                </div>
-                <div class="hidden sm:ml-6 sm:flex sm:items-center">
-                    <a href="/logout" class="text-gray-500 hover:text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Logout</a>
-                </div>
-            </div>
-        </div>
-    </nav>
-
-    <div class="hero py-12">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <h1 class="text-4xl font-bold">Welcome to LibraryBuilder</h1>
-            <p class="mt-4 text-lg">Crawl websites and build a knowledge base for AI-powered queries.</p>
-            <a href="/crawl" class="mt-6 inline-block px-6 py-3 bg-white text-indigo-600 font-semibold rounded-md shadow hover:bg-gray-100">Start Crawling</a>
-        </div>
-    </div>
-
-    <div class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div class="bg-white p-6 rounded-lg shadow">
-            <h2 class="text-2xl font-semibold text-gray-900">Build Your Knowledge Base</h2>
-            <p class="mt-4 text-gray-600">LibraryBuilder lets you crawl websites, extract content, and create a searchable knowledge base for AI-driven insights.</p>
-        </div>
+    <div class="container">
+        <header>
+            <img src="/static/logo.png" alt="LibraryBuilder Logo" class="logo">
+            <nav>
+                <a href="/">Home</a>
+                <a href="/libraries">Libraries</a>
+                <a href="/prompts">Prompts</a>
+                <a href="/crawl">Crawl</a>
+                <a href="/search">Search</a>
+                {% if current_user.is_authenticated %}
+                    <a href="/logout">Logout</a>
+                {% else %}
+                    <a href="/login">Login</a>
+                    <a href="/register">Register</a>
+                {% endif %}
+            </nav>
+        </header>
+        <main>
+            <h1>Welcome to LibraryBuilder</h1>
+            <p>Build and search your web content library.</p>
+        </main>
     </div>
 </body>
 </html>
