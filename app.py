@@ -19,7 +19,6 @@ from bs4 import BeautifulSoup
 import traceback
 from openai import OpenAI
 import tenacity
-import time
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -452,7 +451,7 @@ async def crawl():
 @app.route('/crawl_progress', methods=['GET'])
 @login_required
 async def crawl_progress():
-    def stream_progress():
+    async def stream_progress():
         while True:
             try:
                 conn = sqlite3.connect('progress.db')
@@ -517,7 +516,6 @@ async def search():
             """, (int(library_id), query_embedding.tolist()))
             results = cur.fetchall()
             
-            # Get prompt content
             cur.execute("SELECT content FROM prompts WHERE id = %s AND user_id = %s", (int(prompt_id), current_user.id))
             prompt = cur.fetchone()
             cur.close()
@@ -527,7 +525,6 @@ async def search():
                 flash('Selected prompt not found.', 'error')
                 return render_template('search.html', libraries=libraries, prompts=prompts)
             
-            # Generate AI summary
             context = "\n\n".join([result[1] for result in results])
             answer = query_grok_api(query, context, prompt[0])
             if not answer.startswith("Error") and not answer.startswith("Fallback"):
