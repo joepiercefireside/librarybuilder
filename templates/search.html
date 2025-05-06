@@ -2,54 +2,91 @@
 <html>
 <head>
     <title>Search - LibraryBuilder</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        body { background-color: #e9ecef; }
+        .container { max-width: 800px; }
+        pre { background-color: #f8f9fa; padding: 15px; border-radius: 5px; }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <img src="/static/logo.png" alt="LibraryBuilder Logo" class="logo">
-            <nav>
-                <a href="/">Home</a>
-                <a href="/libraries">Libraries</a>
-                <a href="/prompts">Prompts</a>
-                <a href="/crawl">Crawl</a>
-                <a href="/search">Search</a>
-                <a href="/logout">Logout</a>
-            </nav>
-        </header>
-        <main>
-            <h1>Search Library</h1>
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <p class="{{ category }}">{{ message }}</p>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-            <form method="post">
-                <label for="query">Search Query:</label>
-                <input type="text" id="query" name="query" required>
-                <label for="library_id">Select Library:</label>
-                <select id="library_id" name="library_id" required>
-                    <option value="">Select a library</option>
-                    {% for library in libraries %}
-                        <option value="{{ library[0] }}">{{ library[1] }}</option>
-                    {% endfor %}
-                </select>
-                <label for="prompt_id">Select Prompt:</label>
-                <select id="prompt_id" name="prompt_id" required>
-                    <option value="">Select a prompt</option>
-                    {% for prompt in prompts %}
-                        <option value="{{ prompt[0] }}">{{ prompt[1] }}</option>
-                    {% endfor %}
-                </select>
-                <button type="submit">Search</button>
-            </form>
-            {% if query %}
-                <h2>Results for "{{ query }}"</h2>
-                <pre>{{ answer }}</pre>
+    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <img src="/static/logo.png" alt="LibraryBuilder Logo" style="height: 40px;">
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/libraries">Libraries</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/prompts">Prompts</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/crawl">Crawl</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/search">Search</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logout">Logout</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-5">
+        <h1 class="mb-4">Search Libraries</h1>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
+                {% endfor %}
             {% endif %}
-        </main>
+        {% endwith %}
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Search Content</h5>
+                <form method="post">
+                    <div class="mb-3">
+                        <label for="query" class="form-label">Search Query</label>
+                        <input type="text" class="form-control" id="query" name="query" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="library_id" class="form-label">Select Library</label>
+                        <select class="form-select" id="library_id" name="library_id" required>
+                            <option value="">Select a library</option>
+                            {% for library in libraries %}
+                                <option value="{{ library[0] }}">{{ library[1] }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="prompt_id" class="form-label">Select Prompt</label>
+                        <select class="form-select" id="prompt_id" name="prompt_id" required>
+                            <option value="">Select a prompt</option>
+                            {% for prompt in prompts %}
+                                <option value="{{ prompt[0] }}">{{ prompt[1] }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Search</button>
+                </form>
+            </div>
+        </div>
+        {% if query %}
+            <h2 class="mt-4">Results for "{{ query }}"</h2>
+            <pre>{{ answer }}</pre>
+        {% endif %}
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

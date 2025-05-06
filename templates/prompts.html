@@ -2,48 +2,91 @@
 <html>
 <head>
     <title>Prompts - LibraryBuilder</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        body { background-color: #e9ecef; }
+        .container { max-width: 800px; }
+        .card { margin-bottom: 20px; }
+        .btn-group { margin-left: 10px; }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <img src="/static/logo.png" alt="LibraryBuilder Logo" class="logo">
-            <nav>
-                <a href="/">Home</a>
-                <a href="/libraries">Libraries</a>
-                <a href="/prompts">Prompts</a>
-                <a href="/crawl">Crawl</a>
-                <a href="/search">Search</a>
-                <a href="/logout">Logout</a>
-            </nav>
-        </header>
-        <main>
-            <h1>Create Prompt</h1>
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <p class="{{ category }}">{{ message }}</p>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-            <form method="post">
-                <label for="name">Prompt Name:</label>
-                <input type="text" id="name" name="name" required>
-                <label for="content">Prompt Content:</label>
-                <textarea id="content" name="content" required></textarea>
-                <button type="submit">Create Prompt</button>
-            </form>
-            <h2>Your Prompts</h2>
-            {% if prompts %}
-                <ul>
-                    {% for prompt in prompts %}
-                        <li>{{ prompt[1] }}: {{ prompt[2] }}</li>
-                    {% endfor %}
+    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <img src="/static/logo.png" alt="LibraryBuilder Logo" style="height: 40px;">
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/libraries">Libraries</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/prompts">Prompts</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/crawl">Crawl</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/search">Search</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logout">Logout</a>
+                    </li>
                 </ul>
-            {% else %}
-                <p>No prompts found.</p>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-5">
+        <h1 class="mb-4">Manage Prompts</h1>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
+                {% endfor %}
             {% endif %}
-        </main>
+        {% endwith %}
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Create New Prompt</h5>
+                <form method="post">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Prompt Name</label>
+                        <input type="text" class="form-control" id="name" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="content" class="form-label">Prompt Content</label>
+                        <textarea class="form-control" id="content" name="content" rows="4" required></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Create Prompt</button>
+                </form>
+            </div>
+        </div>
+        <h2 class="mt-4">Your Prompts</h2>
+        {% if prompts %}
+            {% for prompt in prompts %}
+                <div class="card">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ prompt[1] }}</h5>
+                        <p class="card-text">{{ prompt[2] }}</p>
+                        <div class="btn-group">
+                            <a href="{{ url_for('edit_prompt', prompt_id=prompt[0]) }}" class="btn btn-outline-primary btn-sm">Edit</a>
+                            <a href="{{ url_for('delete_prompt', prompt_id=prompt[0]) }}" class="btn btn-outline-danger btn-sm" onclick="return confirm('Are you sure you want to delete this prompt?');">Delete</a>
+                        </div>
+                    </div>
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>No prompts found. Create one above!</p>
+        {% endif %}
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

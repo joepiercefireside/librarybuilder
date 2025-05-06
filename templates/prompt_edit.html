@@ -1,12 +1,12 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Register - LibraryBuilder</title>
+    <title>Edit Prompt - LibraryBuilder</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
     <style>
         body { background-color: #e9ecef; }
-        .container { max-width: 500px; }
+        .container { max-width: 800px; }
     </style>
 </head>
 <body>
@@ -27,7 +27,7 @@
                         <a class="nav-link" href="/libraries">Libraries</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/prompts">Prompts</a>
+                        <a class="nav-link active" href="/prompts">Prompts</a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/crawl">Crawl</a>
@@ -36,17 +36,14 @@
                         <a class="nav-link" href="/search">Search</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link active" href="/register">Register</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/login">Login</a>
+                        <a class="nav-link" href="/logout">Logout</a>
                     </li>
                 </ul>
             </div>
         </div>
     </nav>
     <div class="container mt-5">
-        <h1 class="mb-4">Register</h1>
+        <h1 class="mb-4">Edit Prompt</h1>
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
@@ -56,16 +53,18 @@
         {% endwith %}
         <div class="card">
             <div class="card-body">
+                <h5 class="card-title">Edit Prompt: {{ prompt[1] }}</h5>
                 <form method="post">
                     <div class="mb-3">
-                        <label for="email" class="form-label">Email</label>
-                        <input type="email" class="form-control" id="email" name="email" required>
+                        <label for="name" class="form-label">Prompt Name</label>
+                        <input type="text" class="form-control" id="name" name="name" value="{{ prompt[1] }}" required>
                     </div>
                     <div class="mb-3">
-                        <label for="password" class="form-label">Password</label>
-                        <input type="password" class="form-control" id="password" name="password" required>
+                        <label for="content" class="form-label">Prompt Content</label>
+                        <textarea class="form-control" id="content" name="content" rows="4" required>{{ prompt[2] }}</textarea>
                     </div>
-                    <button type="submit" class="btn btn-primary">Register</button>
+                    <button type="submit" class="btn btn-primary">Update Prompt</button>
+                    <a href="{{ url_for('prompts') }}" class="btn btn-secondary">Cancel</a>
                 </form>
             </div>
         </div>
