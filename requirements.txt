@@ -14,4 +14,4 @@ psutil==6.1.1
 beautifulsoup4==4.12.3
 requests==2.31.0
 openai==1.35.7
-hf_xet==0.1.1
+tenacity==8.2.3

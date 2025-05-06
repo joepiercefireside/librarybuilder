@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y libnss3 libxss1 libasound2 libatk1.0-0 
 # Set working directory
 WORKDIR /app
 
+# Clear Hugging Face cache
+RUN rm -rf /tmp/hf_cache
+
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt -v

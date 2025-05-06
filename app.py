@@ -5,6 +5,8 @@ from psycopg2.extras import execute_values
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
 import logging
+import asyncio
+import aiohttp
 from transformers import AutoTokenizer, AutoModel
 import torch
 import numpy as np
@@ -13,10 +15,11 @@ import urllib.parse
 import sqlite3
 import json
 import psutil
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 import traceback
 from openai import OpenAI
+import tenacity
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -44,7 +47,8 @@ def init_progress_db():
 
 init_progress_db()
 
-def load_embedding_model():
+@tenacity.retry(stop=tenacity.stop_after_attempt(3), wait=tenacity.wait_exponential(multiplier=1, min=4, max=10))
+async def load_embedding_model():
     global tokenizer, model
     if tokenizer is None or model is None:
         logger.info("Loading all-MiniLM-L6-v2 model...")
@@ -57,7 +61,7 @@ def load_embedding_model():
             raise
     return tokenizer, model
 
-def unload_embedding_model():
+async def unload_embedding_model():
     global tokenizer, model
     tokenizer = None
     model = None
@@ -112,21 +116,21 @@ def clean_content(html):
         logger.error(f"Error cleaning content: {e}\n{traceback.format_exc()}")
         return html[:1000]
 
-def generate_embedding(text):
+async def generate_embedding(text):
     """Generate embedding for a single text."""
     try:
         process = psutil.Process()
         logger.info(f"Memory usage before embedding: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-        tokenizer, model = load_embedding_model()
+        tokenizer, model = await load_embedding_model()
         inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
         with torch.no_grad():
             outputs = model(**inputs)
         embedding = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
-        unload_embedding_model()  # Free memory after embedding
+        await unload_embedding_model()
         logger.info(f"Memory usage after embedding: {process.memory_info().rss / 1024 / 1024:.2f} MB")
         return embedding
     except Exception as e:
-        logger.error(f"Error generating embedding: {e}\n{traceback.format_exc()}")
+        logger.error(f"Error generating embedding: {str(e)}\n{traceback.format_exc()}")
         return None
 
 def query_grok_api(query, context):
@@ -154,8 +158,8 @@ def query_grok_api(query, context):
         logger.error(f"Error querying xAI Grok API: {str(e)}\n{traceback.format_exc()}")
         return f"Fallback: Unable to generate AI summary due to API error. Please check API key or endpoint."
 
-def crawl_website(start_url, user_id):
-    """Crawl website using Playwright synchronously and store progress."""
+async def crawl_website(start_url, user_id):
+    """Crawl website using Playwright asynchronously and store progress."""
     logger.info(f"Starting crawl for {start_url} by user {user_id}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -176,8 +180,8 @@ def crawl_website(start_url, user_id):
     conn.commit()
     
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'])
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'])
             try:
                 while to_visit and items_crawled < max_items:
                     url = to_visit.pop(0)
@@ -189,15 +193,15 @@ def crawl_website(start_url, user_id):
                     logger.debug(f"Scanning URL: {url}")
                     
                     try:
-                        page = browser.new_page()
-                        page.goto(url, timeout=30000)
-                        page.wait_for_load_state('networkidle', timeout=30000)
-                        page.wait_for_timeout(3000)  # Increased for dynamic content
+                        page = await browser.new_page()
+                        await page.goto(url, timeout=30000)
+                        await page.wait_for_load_state('networkidle', timeout=30000)
+                        await page.wait_for_timeout(3000)  # Increased for dynamic content
                         
                         # Extract content
-                        content = page.content()
+                        content = await page.content()
                         if content:
-                            embedding = generate_embedding(content)
+                            embedding = await generate_embedding(content)
                             if embedding is not None:
                                 items_crawled += 1
                                 cleaned_content = clean_content(content)
@@ -205,7 +209,7 @@ def crawl_website(start_url, user_id):
                                 logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
                         
                         # Extract all links, including dynamic ones
-                        links = page.evaluate('''() => {
+                        links = await page.evaluate('''() => {
                             const urls = [];
                             document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link]').forEach(el => {
                                 let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link');
@@ -229,7 +233,7 @@ def crawl_website(start_url, user_id):
                                   (links_found, links_scanned, items_crawled, "running", user_id, start_url))
                         conn.commit()
                         
-                        page.close()  # Close page immediately to free memory
+                        await page.close()  # Close page immediately to free memory
                         logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                     except Exception as e:
                         logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
@@ -243,7 +247,7 @@ def crawl_website(start_url, user_id):
                           ("complete", user_id, start_url))
                 conn.commit()
             finally:
-                browser.close()
+                await browser.close()
                 conn.close()
         return crawled_data
     except Exception as e:
@@ -255,7 +259,7 @@ def crawl_website(start_url, user_id):
         return crawled_data
 
 @app.route('/')
-def index():
+async def index():
     try:
         logger.info("Accessing index page")
         return render_template('index.html')
@@ -264,7 +268,7 @@ def index():
         return "Internal Server Error", 500
 
 @app.route('/register', methods=['GET', 'POST'])
-def register():
+async def register():
     try:
         if request.method == 'POST':
             email = request.form.get('email')
@@ -288,7 +292,7 @@ def register():
         return "Internal Server Error", 500
 
 @app.route('/login', methods=['GET', 'POST'])
-def login():
+async def login():
     try:
         if request.method == 'POST':
             email = request.form.get('email')
@@ -311,7 +315,7 @@ def login():
 
 @app.route('/logout')
 @login_required
-def logout():
+async def logout():
     try:
         logout_user()
         logger.info("User logged out")
@@ -322,7 +326,7 @@ def logout():
 
 @app.route('/crawl', methods=['GET', 'POST'])
 @login_required
-def crawl():
+async def crawl():
     try:
         if request.method == 'POST':
             start_url = request.form.get('url')
@@ -331,7 +335,7 @@ def crawl():
                 return render_template('crawl.html')
             
             logger.info(f"Starting crawl for {start_url} by user {current_user.id}")
-            crawled_data = crawl_website(start_url, current_user.id)
+            crawled_data = await crawl_website(start_url, current_user.id)
             
             if crawled_data:
                 conn = get_db_connection()
@@ -359,7 +363,7 @@ def crawl():
 
 @app.route('/crawl_progress', methods=['GET'])
 @login_required
-def crawl_progress():
+async def crawl_progress():
     try:
         conn = sqlite3.connect('progress.db')
         c = conn.cursor()
@@ -381,7 +385,7 @@ def crawl_progress():
 
 @app.route('/search', methods=['GET', 'POST'])
 @login_required
-def search():
+async def search():
     try:
         if request.method == 'POST':
             query = request.form.get('query')
@@ -390,7 +394,7 @@ def search():
                 return render_template('search.html')
             
             logger.info(f"Search query: {query}")
-            query_embedding = generate_embedding(query)
+            query_embedding = await generate_embedding(query)
             if query_embedding is None:
                 flash('Failed to generate query embedding.', 'error')
                 return render_template('search.html')
@@ -430,15 +434,15 @@ def search():
         return "Internal Server Error", 500
 
 @app.route('/test_playwright')
-def test_playwright():
+async def test_playwright():
     try:
         logger.info("Starting Playwright test")
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            page.goto('https://example.com')
-            content = page.content()
-            browser.close()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            await page.goto('https://example.com')
+            content = await page.content()
+            await browser.close()
             logger.info("Playwright test completed successfully")
             return f"Playwright test successful: {len(content)} bytes"
     except Exception as e:
@@ -446,7 +450,7 @@ def test_playwright():
         return f"Playwright test failed: {str(e)}"
 
 @app.route('/health')
-def health():
+async def health():
     return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
