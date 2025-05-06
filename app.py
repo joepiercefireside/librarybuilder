@@ -6,7 +6,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import os
 import logging
 import asyncio
-import aiohttp
 from transformers import AutoTokenizer, AutoModel
 import torch
 import numpy as np
@@ -143,7 +142,7 @@ def query_grok_api(query, context):
         
         client = OpenAI(
             api_key=api_key,
-            base_url="https://api.x.ai/v1",
+            base_url="https://api.x.ai/v1"
         )
         completion = client.chat.completions.create(
             model="grok-3-latest",
@@ -211,10 +210,15 @@ async def crawl_website(start_url, user_id):
                         # Extract all links, including dynamic ones
                         links = await page.evaluate('''() => {
                             const urls = [];
-                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link]').forEach(el => {
-                                let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link');
+                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], [href], [src]').forEach(el => {
+                                let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link') || el.getAttribute('src');
                                 if (!url && el.getAttribute('onclick')) {
-                                    const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo)\(['"]([^'"]+)['"]/);
+                                    const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign|window\.location\.replace)\(['"]([^'"]+)['"]/);
+                                    if (match) url = match[1];
+                                }
+                                if (!url && el.tagName === 'META' && el.getAttribute('http-equiv') === 'refresh') {
+                                    const content = el.getAttribute('content');
+                                    const match = content.match(/url=(.+)$/i);
                                     if (match) url = match[1];
                                 }
                                 if (url) urls.push(url);
