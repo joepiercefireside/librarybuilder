@@ -1,78 +1,72 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Crawl Website</title>
+    <title>Crawl - LibraryBuilder</title>
     <link rel="stylesheet" href="/static/styles.css">
     <script>
-        function startCrawl() {
-            const url = document.getElementById('url').value;
-            if (!url) {
-                alert('Please enter a URL');
-                return;
-            }
-            document.getElementById('progress').style.display = 'block';
-            document.getElementById('links_found').textContent = '0';
-            document.getElementById('links_scanned').textContent = '0';
-            document.getElementById('items_crawled').textContent = '0';
-            document.getElementById('status').textContent = 'Starting...';
-            
-            fetch('/crawl', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: 'url=' + encodeURIComponent(url)
-            }).then(response => {
-                if (response.ok) {
-                    pollProgress();
-                } else {
-                    document.getElementById('status').textContent = 'Error starting crawl';
+        function startProgress() {
+            const source = new EventSource('/crawl_progress');
+            const progressDiv = document.getElementById('progress');
+            source.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                progressDiv.innerHTML = `
+                    Links Found: ${data.links_found}<br>
+                    Links Scanned: ${data.links_scanned}<br>
+                    Pages Crawled: ${data.items_crawled}<br>
+                    Status: ${data.status}
+                `;
+                if (data.status === 'complete' || data.status.startsWith('error')) {
+                    source.close();
                 }
-            });
+            };
+            source.onerror = function() {
+                progressDiv.innerHTML = 'Error fetching progress.';
+                source.close();
+            };
         }
-
-        function pollProgress() {
-            fetch('/crawl_progress')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('links_found').textContent = data.links_found;
-                    document.getElementById('links_scanned').textContent = data.links_scanned;
-                    document.getElementById('items_crawled').textContent = data.items_crawled;
-                    document.getElementById('status').textContent = data.status;
-                    if (data.status === 'complete' || data.status.startsWith('error')) {
-                        return;
-                    }
-                    setTimeout(pollProgress, 1000);
-                });
-        }
+        window.onload = function() {
+            if (document.getElementById('progress')) {
+                startProgress();
+            }
+        };
     </script>
 </head>
 <body>
     <div class="container">
-        <img src="/static/logo.png" alt="LibraryBuilder Logo" class="logo">
-        <h1>Crawl Website</h1>
-        <form onsubmit="event.preventDefault(); startCrawl();">
-            <label for="url">Website URL:</label>
-            <input type="text" id="url" name="url" placeholder="https://example.com">
-            <button type="submit">Start Crawl</button>
-        </form>
-        <div id="progress" style="display: none;">
-            <h2>Crawl Progress</h2>
-            <p>Links Found: <span id="links_found">0</span></p>
-            <p>Links Scanned: <span id="links_scanned">0</span></p>
-            <p>Items Crawled: <span id="items_crawled">0</span></p>
-            <p>Status: <span id="status">Starting...</span></p>
-        </div>
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <p class="{{ category }}">{{ message }}</p>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        <a href="{{ url_for('index') }}">Back to Home</a>
+        <header>
+            <img src="/static/logo.png" alt="LibraryBuilder Logo" class="logo">
+            <nav>
+                <a href="/">Home</a>
+                <a href="/libraries">Libraries</a>
+                <a href="/prompts">Prompts</a>
+                <a href="/crawl">Crawl</a>
+                <a href="/search">Search</a>
+                <a href="/logout">Logout</a>
+            </nav>
+        </header>
+        <main>
+            <h1>Crawl Website</h1>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <p class="{{ category }}">{{ message }}</p>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <form method="post">
+                <label for="url">Website URL:</label>
+                <input type="text" id="url" name="url" required>
+                <label for="library_id">Select Library:</label>
+                <select id="library_id" name="library_id" required>
+                    <option value="">Select a library</option>
+                    {% for library in libraries %}
+                        <option value="{{ library[0] }}">{{ library[1] }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" onclick="startProgress()">Start Crawl</button>
+            </form>
+            <div id="progress">Waiting for crawl progress...</div>
+        </main>
     </div>
 </body>
 </html>

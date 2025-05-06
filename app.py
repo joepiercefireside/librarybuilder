@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import psycopg2
 from psycopg2.extras import execute_values
@@ -19,10 +19,11 @@ from bs4 import BeautifulSoup
 import traceback
 from openai import OpenAI
 import tenacity
+import time
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour session timeout
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
@@ -40,7 +41,7 @@ def init_progress_db():
     conn = sqlite3.connect('progress.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS progress
-                 (user_id TEXT, url TEXT, links_found INTEGER, links_scanned INTEGER, items_crawled INTEGER, status TEXT)''')
+                 (user_id TEXT, url TEXT, library_id INTEGER, links_found INTEGER, links_scanned INTEGER, items_crawled INTEGER, status TEXT)''')
     conn.commit()
     conn.close()
 
@@ -52,6 +53,7 @@ async def load_embedding_model():
     if tokenizer is None or model is None:
         logger.info("Loading all-MiniLM-L6-v2 model...")
         try:
+            os.environ["TOKENIZERS_PARALLELISM"] = "false"
             tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
             model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
             logger.info("all-MiniLM-L6-v2 model loaded.")
@@ -67,14 +69,13 @@ async def unload_embedding_model():
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
     logger.info("Unloaded all-MiniLM-L6-v2 model to free memory.")
 
-# Database connection function with error handling
 def get_db_connection():
     try:
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         logger.info("Database connection established.")
         return conn
     except KeyError as e:
-        logger.error(f"Missing DATABASE_URL environment variable: {e}")
+        logger.error(f"Missing DATABASE_URL: {e}")
         raise
     except psycopg2.Error as e:
         logger.error(f"Database connection failed: {e}")
@@ -104,19 +105,17 @@ def load_user(user_id):
         return None
 
 def clean_content(html):
-    """Extract clean text from HTML using BeautifulSoup."""
     try:
         soup = BeautifulSoup(html, 'html.parser')
         for element in soup(['script', 'style', 'header', 'footer', 'nav']):
             element.decompose()
         text = soup.get_text(separator=' ', strip=True)
-        return ' '.join(text.split())[:1000]  # Limit to 1000 chars
+        return ' '.join(text.split())[:1000]
     except Exception as e:
         logger.error(f"Error cleaning content: {e}\n{traceback.format_exc()}")
         return html[:1000]
 
 async def generate_embedding(text):
-    """Generate embedding for a single text."""
     try:
         process = psutil.Process()
         logger.info(f"Memory usage before embedding: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -132,22 +131,18 @@ async def generate_embedding(text):
         logger.error(f"Error generating embedding: {str(e)}\n{traceback.format_exc()}")
         return None
 
-def query_grok_api(query, context):
-    """Query xAI Grok API for a summary response using OpenAI client."""
+def query_grok_api(query, context, prompt):
     try:
         api_key = os.environ.get('XAI_API_KEY')
         if not api_key:
-            logger.error("XAI_API_KEY environment variable not set")
+            logger.error("XAI_API_KEY not set")
             return "Error: xAI API key not configured"
         
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.x.ai/v1"
-        )
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         completion = client.chat.completions.create(
             model="grok-3-latest",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant with expertise in analyzing web content."},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": f"Based on the following context, answer the question: {query}\n\nContext: {context}"}
             ],
             max_tokens=500
@@ -155,27 +150,26 @@ def query_grok_api(query, context):
         return completion.choices[0].message.content
     except Exception as e:
         logger.error(f"Error querying xAI Grok API: {str(e)}\n{traceback.format_exc()}")
-        return f"Fallback: Unable to generate AI summary due to API error. Please check API key or endpoint."
+        return f"Fallback: Unable to generate AI summary. Please check API key or endpoint."
 
-async def crawl_website(start_url, user_id):
-    """Crawl website using Playwright asynchronously and store progress."""
-    logger.info(f"Starting crawl for {start_url} by user {user_id}")
+async def crawl_website(start_url, user_id, library_id):
+    logger.info(f"Starting crawl for {start_url} by user {user_id} in library {library_id}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
     
     visited_urls = set()
     to_visit = [start_url]
     base_domain = urllib.parse.urlparse(start_url).netloc
-    links_found = 1  # Start with the initial URL
+    links_found = 1
     links_scanned = 0
     items_crawled = 0
-    max_items = 20  # Increased for dynamic sites
+    max_items = 20
     crawled_data = []
     
     conn = sqlite3.connect('progress.db')
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO progress (user_id, url, links_found, links_scanned, items_crawled, status) VALUES (?, ?, ?, ?, ?, ?)",
-              (user_id, start_url, links_found, links_scanned, items_crawled, "running"))
+    c.execute("INSERT OR REPLACE INTO progress (user_id, url, library_id, links_found, links_scanned, items_crawled, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              (user_id, start_url, library_id, links_found, links_scanned, items_crawled, "running"))
     conn.commit()
     
     try:
@@ -193,24 +187,33 @@ async def crawl_website(start_url, user_id):
                     
                     try:
                         page = await browser.new_page()
-                        await page.goto(url, timeout=30000)
-                        await page.wait_for_load_state('networkidle', timeout=30000)
-                        await page.wait_for_timeout(3000)  # Increased for dynamic content
+                        response = await page.goto(url, timeout=30000, wait_until='networkidle')
+                        if response is None or response.status >= 400:
+                            logger.warning(f"Failed to load {url}: Status {response.status if response else 'None'}")
+                            await page.close()
+                            continue
                         
-                        # Extract content
+                        await page.wait_for_timeout(5000)
+                        
                         content = await page.content()
-                        if content:
-                            embedding = await generate_embedding(content)
-                            if embedding is not None:
-                                items_crawled += 1
-                                cleaned_content = clean_content(content)
-                                crawled_data.append((url, cleaned_content, embedding.tolist(), None))
-                                logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
+                        if not content or len(content.strip()) < 100:
+                            logger.warning(f"No valid content found for {url}")
+                            await page.close()
+                            continue
                         
-                        # Extract all links, including dynamic ones and sitemaps
+                        embedding = await generate_embedding(content)
+                        if embedding is None:
+                            logger.warning(f"Failed to generate embedding for {url}")
+                            await page.close()
+                            continue
+                        
+                        items_crawled += 1
+                        cleaned_content = clean_content(content)
+                        crawled_data.append((url, cleaned_content, embedding.tolist(), None, library_id))
+                        logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
+                        
                         links = await page.evaluate('''() => {
                             const urls = [];
-                            // Standard links and dynamic elements
                             document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], [href], [src], link[rel="sitemap"]').forEach(el => {
                                 let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link') || el.getAttribute('src');
                                 if (!url && el.getAttribute('onclick')) {
@@ -227,10 +230,9 @@ async def crawl_website(start_url, user_id):
                                 }
                                 if (url) urls.push(url);
                             });
-                            // JavaScript-driven navigation
                             const scripts = document.querySelectorAll('script');
                             scripts.forEach(script => {
-                                const text = script.textContent;
+                                const text = script.textContent || script.src;
                                 const matches = text.match(/(?:location\.href|window\.location|navigateTo|open)\(['"]([^'"]+)['"]/g);
                                 if (matches) {
                                     matches.forEach(match => {
@@ -239,41 +241,43 @@ async def crawl_website(start_url, user_id):
                                     });
                                 }
                             });
-                            return [...new Set(urls)]; // Remove duplicates
+                            return [...new Set(urls)];
                         }''')
                         for link in links:
                             absolute_url = urllib.parse.urljoin(url, link)
-                            if urllib.parse.urlparse(absolute_url).netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit:
+                            parsed_url = urllib.parse.urlparse(absolute_url)
+                            if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit and parsed_url.scheme in ('http', 'https'):
                                 to_visit.append(absolute_url)
                                 links_found += 1
                                 logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
                         
-                        # Update progress
-                        c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ?",
-                                  (links_found, links_scanned, items_crawled, "running", user_id, start_url))
+                        c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                                  (links_found, links_scanned, items_crawled, "running", user_id, start_url, library_id))
                         conn.commit()
                         
-                        await page.close()  # Close page immediately to free memory
+                        await page.close()
                         logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                     except Exception as e:
                         logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
-                        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
-                                  (f"error: {str(e)}", user_id, start_url))
+                        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                                  (f"error: {str(e)}", user_id, start_url, library_id))
                         conn.commit()
                         conn.close()
                         return crawled_data
                 logger.info(f"Crawl complete: items_crawled={items_crawled}")
-                c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
-                          ("complete", user_id, start_url))
+                c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                          ("complete", user_id, start_url, library_id))
                 conn.commit()
             finally:
                 await browser.close()
                 conn.close()
+        if not crawled_data and links_found == links_scanned:
+            flash("No new links found; all URLs already exist in the database.", 'info')
         return crawled_data
     except Exception as e:
         logger.error(f"Unexpected error in crawl_website: {str(e)}\n{traceback.format_exc()}")
-        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ?",
-                  (f"error: {str(e)}", user_id, start_url))
+        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                  (f"error: {str(e)}", user_id, start_url, library_id))
         conn.commit()
         conn.close()
         return crawled_data
@@ -344,96 +348,188 @@ async def logout():
         logger.error(f"Error in logout endpoint: {e}\n{traceback.format_exc()}")
         return "Internal Server Error", 500
 
+@app.route('/libraries', methods=['GET', 'POST'])
+@login_required
+async def libraries():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if request.method == 'POST':
+            name = request.form.get('name')
+            if not name:
+                flash('Library name cannot be empty.', 'error')
+            else:
+                cur.execute("INSERT INTO libraries (user_id, name) VALUES (%s, %s)", (current_user.id, name))
+                conn.commit()
+                flash('Library created successfully.', 'success')
+                return redirect(url_for('libraries'))
+        
+        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (current_user.id,))
+        libraries = cur.fetchall()
+        cur.close()
+        conn.close()
+        return render_template('libraries.html', libraries=libraries)
+    except Exception as e:
+        logger.error(f"Error in libraries endpoint: {e}\n{traceback.format_exc()}")
+        flash(f"Error: {str(e)}", 'error')
+        return render_template('libraries.html', libraries=[])
+
+@app.route('/prompts', methods=['GET', 'POST'])
+@login_required
+async def prompts():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if request.method == 'POST':
+            name = request.form.get('name')
+            content = request.form.get('content')
+            if not name or not content:
+                flash('Prompt name and content cannot be empty.', 'error')
+            else:
+                cur.execute("INSERT INTO prompts (user_id, name, content) VALUES (%s, %s, %s)", (current_user.id, name, content))
+                conn.commit()
+                flash('Prompt created successfully.', 'success')
+                return redirect(url_for('prompts'))
+        
+        cur.execute("SELECT id, name, content FROM prompts WHERE user_id = %s", (current_user.id,))
+        prompts = cur.fetchall()
+        cur.close()
+        conn.close()
+        return render_template('prompts.html', prompts=prompts)
+    except Exception as e:
+        logger.error(f"Error in prompts endpoint: {e}\n{traceback.format_exc()}")
+        flash(f"Error: {str(e)}", 'error')
+        return render_template('prompts.html', prompts=[])
+
 @app.route('/crawl', methods=['GET', 'POST'])
 @login_required
 async def crawl():
     try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (current_user.id,))
+        libraries = cur.fetchall()
+        cur.close()
+        conn.close()
+        
         if request.method == 'POST':
             start_url = request.form.get('url')
-            if not start_url:
-                flash('URL cannot be empty.', 'error')
-                return render_template('crawl.html')
+            library_id = request.form.get('library_id')
+            if not start_url or not library_id:
+                flash('URL and library selection cannot be empty.', 'error')
+                return render_template('crawl.html', libraries=libraries)
             
-            logger.info(f"Starting crawl for {start_url} by user {current_user.id}")
-            crawled_data = await crawl_website(start_url, current_user.id)
+            logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
+            crawled_data = await crawl_website(start_url, current_user.id, int(library_id))
             
             if crawled_data:
                 conn = get_db_connection()
                 cur = conn.cursor()
                 query = """
-                INSERT INTO documents (url, content, embedding, file_path)
+                INSERT INTO documents (url, content, embedding, file_path, library_id)
                 VALUES %s
-                ON CONFLICT (url) DO NOTHING
+                ON CONFLICT (url, library_id) DO NOTHING
                 """
                 execute_values(cur, query, crawled_data)
                 conn.commit()
                 cur.close()
                 conn.close()
-                flash(f"Stored {len(crawled_data)} items.", 'success')
+                flash(f"Stored {len(crawled_data)} items in library.", 'success')
+            elif not crawled_data:
+                # Flash message set in crawl_website if no new links found
+                pass
             else:
                 flash("No items crawled.", 'error')
             
             return redirect(url_for('crawl'))
         
-        return render_template('crawl.html')
+        return render_template('crawl.html', libraries=libraries)
     except Exception as e:
         logger.error(f"Error in crawl endpoint: {e}\n{traceback.format_exc()}")
         flash(f"Error during crawl: {str(e)}", 'error')
-        return render_template('crawl.html')
+        return render_template('crawl.html', libraries=[])
 
 @app.route('/crawl_progress', methods=['GET'])
 @login_required
 async def crawl_progress():
-    try:
-        conn = sqlite3.connect('progress.db')
-        c = conn.cursor()
-        c.execute("SELECT links_found, links_scanned, items_crawled, status FROM progress WHERE user_id = ? ORDER BY rowid DESC LIMIT 1",
-                  (current_user.id,))
-        result = c.fetchone()
-        conn.close()
-        if result:
-            return jsonify({
-                "links_found": result[0],
-                "links_scanned": result[1],
-                "items_crawled": result[2],
-                "status": result[3]
-            })
-        return jsonify({"links_found": 0, "links_scanned": 0, "items_crawled": 0, "status": "none"})
-    except Exception as e:
-        logger.error(f"Error in crawl_progress: {e}\n{traceback.format_exc()}")
-        return jsonify({"status": f"error: {str(e)}"})
+    def stream_progress():
+        while True:
+            try:
+                conn = sqlite3.connect('progress.db')
+                c = conn.cursor()
+                c.execute("SELECT links_found, links_scanned, items_crawled, status FROM progress WHERE user_id = ? ORDER BY rowid DESC LIMIT 1",
+                          (current_user.id,))
+                result = c.fetchone()
+                conn.close()
+                if result:
+                    data = {
+                        "links_found": result[0],
+                        "links_scanned": result[1],
+                        "items_crawled": result[2],
+                        "status": result[3]
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
+                if result and result[3] in ["complete", "error"]:
+                    break
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Error in crawl_progress: {e}\n{traceback.format_exc()}")
+                yield f"data: {{'status': 'error: {str(e)}'}}\n\n"
+                break
+    
+    return Response(stream_progress(), mimetype='text/event-stream')
 
 @app.route('/search', methods=['GET', 'POST'])
 @login_required
 async def search():
     try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (current_user.id,))
+        libraries = cur.fetchall()
+        cur.execute("SELECT id, name, content FROM prompts WHERE user_id = %s", (current_user.id,))
+        prompts = cur.fetchall()
+        cur.close()
+        conn.close()
+        
         if request.method == 'POST':
             query = request.form.get('query')
-            if not query:
-                flash('Query cannot be empty.', 'error')
-                return render_template('search.html')
+            library_id = request.form.get('library_id')
+            prompt_id = request.form.get('prompt_id')
+            if not query or not library_id or not prompt_id:
+                flash('Query, library, and prompt selection cannot be empty.', 'error')
+                return render_template('search.html', libraries=libraries, prompts=prompts)
             
-            logger.info(f"Search query: {query}")
+            logger.info(f"Search query: {query} in library {library_id}")
             query_embedding = await generate_embedding(query)
             if query_embedding is None:
                 flash('Failed to generate query embedding.', 'error')
-                return render_template('search.html')
+                return render_template('search.html', libraries=libraries, prompts=prompts)
             
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute("""
             SELECT url, content, file_path, embedding
             FROM documents
+            WHERE library_id = %s
             ORDER BY embedding <=> %s::vector
             LIMIT 5
-            """, (query_embedding.tolist(),))
+            """, (int(library_id), query_embedding.tolist()))
             results = cur.fetchall()
+            
+            # Get prompt content
+            cur.execute("SELECT content FROM prompts WHERE id = %s AND user_id = %s", (int(prompt_id), current_user.id))
+            prompt = cur.fetchone()
             cur.close()
             conn.close()
             
-            # Generate AI summary using xAI Grok API
+            if not prompt:
+                flash('Selected prompt not found.', 'error')
+                return render_template('search.html', libraries=libraries, prompts=prompts)
+            
+            # Generate AI summary
             context = "\n\n".join([result[1] for result in results])
-            answer = query_grok_api(query, context)
+            answer = query_grok_api(query, context, prompt[0])
             if not answer.startswith("Error") and not answer.startswith("Fallback"):
                 answer = f"Answer to '{query}':\n\n{answer}\n\nRelevant Documents:"
             else:
@@ -446,9 +542,9 @@ async def search():
             if not results:
                 answer += "\nNo relevant content found."
             
-            return render_template('search.html', results=results, query=query, answer=answer)
+            return render_template('search.html', libraries=libraries, prompts=prompts, results=results, query=query, answer=answer)
         
-        return render_template('search.html')
+        return render_template('search.html', libraries=libraries, prompts=prompts)
     except Exception as e:
         logger.error(f"Error in search endpoint: {e}\n{traceback.format_exc()}")
         return "Internal Server Error", 500

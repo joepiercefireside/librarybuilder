@@ -1,70 +1,55 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Search - LibraryBuilder</title>
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #f3f4f6; }
-        .prompt-output { max-height: none; overflow-y: auto; }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <nav class="bg-white shadow">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex">
-                    <div class="flex-shrink-0 flex items-center">
-                        <img src="/static/logo.png" alt="LibraryBuilder Logo" class="h-8 w-auto">
-                        <a href="/" class="text-xl font-bold text-gray-800 ml-2">LibraryBuilder</a>
-                    </div>
-                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
-                        <a href="/crawl" class="text-gray-500 hover:text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Crawl</a>
-                        <a href="/search" class="border-b-2 border-indigo-500 text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Search</a>
-                    </div>
-                </div>
-                <div class="hidden sm:ml-6 sm:flex sm:items-center">
-                    <a href="/logout" class="text-gray-500 hover:text-gray-900 inline-flex items-center px-1 pt-1 text-sm font-medium">Logout</a>
-                </div>
-            </div>
-        </div>
-    </nav>
-
-    <div class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <h1 class="text-2xl font-bold text-gray-900">Search Knowledge Base</h1>
-        {% if error %}
-            <p class="text-red-500">{{ error }}</p>
-        {% endif %}
-        <form method="POST" class="mt-4">
-            <div class="flex space-x-4">
-                <input type="text" name="query" placeholder="Enter your question" class="flex-1 px-4 py-2 border rounded-md focus:ring-indigo-500 focus:border-indigo-500" value="{{ query | default('') }}">
-                <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Search</button>
-            </div>
-        </form>
-
-        {% if answer %}
-            <div class="mt-6 bg-white p-6 rounded-lg shadow prompt-output">
-                <h2 class="text-xl font-semibold text-gray-900">Answer</h2>
-                <p class="mt-2 text-gray-600 whitespace-pre-wrap">{{ answer }}</p>
-            </div>
-        {% endif %}
-
-        {% if results %}
-            <div class="mt-6">
-                <h2 class="text-xl font-semibold text-gray-900">Relevant Documents</h2>
-                <div class="mt-4 space-y-4">
-                    {% for result in results %}
-                        <div class="bg-white p-6 rounded-lg shadow">
-                            <h3 class="text-lg font-medium text-gray-900">
-                                <a href="{{ result[0] or result[2] }}" class="text-indigo-600 hover:underline">{{ result[0] or result[2] }}</a>
-                            </h3>
-                            <p class="mt-2 text-gray-600">{{ result[1][:200] }}...</p>
-                        </div>
+    <div class="container">
+        <header>
+            <img src="/static/logo.png" alt="LibraryBuilder Logo" class="logo">
+            <nav>
+                <a href="/">Home</a>
+                <a href="/libraries">Libraries</a>
+                <a href="/prompts">Prompts</a>
+                <a href="/crawl">Crawl</a>
+                <a href="/search">Search</a>
+                <a href="/logout">Logout</a>
+            </nav>
+        </header>
+        <main>
+            <h1>Search Library</h1>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <p class="{{ category }}">{{ message }}</p>
                     {% endfor %}
-                </div>
-            </div>
-        {% endif %}
+                {% endif %}
+            {% endwith %}
+            <form method="post">
+                <label for="query">Search Query:</label>
+                <input type="text" id="query" name="query" required>
+                <label for="library_id">Select Library:</label>
+                <select id="library_id" name="library_id" required>
+                    <option value="">Select a library</option>
+                    {% for library in libraries %}
+                        <option value="{{ library[0] }}">{{ library[1] }}</option>
+                    {% endfor %}
+                </select>
+                <label for="prompt_id">Select Prompt:</label>
+                <select id="prompt_id" name="prompt_id" required>
+                    <option value="">Select a prompt</option>
+                    {% for prompt in prompts %}
+                        <option value="{{ prompt[0] }}">{{ prompt[1] }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit">Search</button>
+            </form>
+            {% if query %}
+                <h2>Results for "{{ query }}"</h2>
+                <pre>{{ answer }}</pre>
+            {% endif %}
+        </main>
     </div>
 </body>
 </html>

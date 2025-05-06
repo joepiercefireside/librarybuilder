@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Libraries - LibraryBuilder</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <img src="/static/logo.png" alt="LibraryBuilder Logo" class="logo">
+            <nav>
+                <a href="/">Home</a>
+                <a href="/libraries">Libraries</a>
+                <a href="/prompts">Prompts</a>
+                <a href="/crawl">Crawl</a>
+                <a href="/search">Search</a>
+                <a href="/logout">Logout</a>
+            </nav>
+        </header>
+        <main>
+            <h1>Create Library</h1>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <p class="{{ category }}">{{ message }}</p>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <form method="post">
+                <label for="name">Library Name:</label>
+                <input type="text" id="name" name="name" required>
+                <button type="submit">Create Library</button>
+            </form>
+            <h2>Your Libraries</h2>
+            {% if libraries %}
+                <ul>
+                    {% for library in libraries %}
+                        <li>{{ library[1] }}</li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p>No libraries found.</p>
+            {% endif %}
+        </main>
+    </div>
+</body>
+</html>

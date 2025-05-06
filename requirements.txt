@@ -17,3 +17,4 @@ openai==1.30.0
 tenacity==8.2.3
 aiohttp==3.9.5
 httpx==0.27.0
+hf_xet==0.1.1
