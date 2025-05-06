@@ -207,10 +207,11 @@ async def crawl_website(start_url, user_id):
                                 crawled_data.append((url, cleaned_content, embedding.tolist(), None))
                                 logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
                         
-                        # Extract all links, including dynamic ones
+                        # Extract all links, including dynamic ones and sitemaps
                         links = await page.evaluate('''() => {
                             const urls = [];
-                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], [href], [src]').forEach(el => {
+                            // Standard links and dynamic elements
+                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], [href], [src], link[rel="sitemap"]').forEach(el => {
                                 let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link') || el.getAttribute('src');
                                 if (!url && el.getAttribute('onclick')) {
                                     const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign|window\.location\.replace)\(['"]([^'"]+)['"]/);
@@ -221,9 +222,24 @@ async def crawl_website(start_url, user_id):
                                     const match = content.match(/url=(.+)$/i);
                                     if (match) url = match[1];
                                 }
+                                if (!url && el.tagName === 'LINK' && el.getAttribute('rel') === 'sitemap') {
+                                    url = el.href;
+                                }
                                 if (url) urls.push(url);
                             });
-                            return urls;
+                            // JavaScript-driven navigation
+                            const scripts = document.querySelectorAll('script');
+                            scripts.forEach(script => {
+                                const text = script.textContent;
+                                const matches = text.match(/(?:location\.href|window\.location|navigateTo|open)\(['"]([^'"]+)['"]/g);
+                                if (matches) {
+                                    matches.forEach(match => {
+                                        const urlMatch = match.match(/['"]([^'"]+)['"]/);
+                                        if (urlMatch) urls.push(urlMatch[1]);
+                                    });
+                                }
+                            });
+                            return [...new Set(urls)]; // Remove duplicates
                         }''')
                         for link in links:
                             absolute_url = urllib.parse.urljoin(url, link)
