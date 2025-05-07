@@ -558,6 +558,10 @@ def crawl_progress():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            if not current_user.is_authenticated:
+                logger.error("Unauthenticated access to crawl_progress")
+                yield "data: {\"status\": \"error: User not authenticated\"}\n\n"
+                return
             while True:
                 try:
                     conn = sqlite3.connect('progress.db')
