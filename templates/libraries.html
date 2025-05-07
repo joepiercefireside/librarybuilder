@@ -38,84 +38,84 @@
         return gk_fileData[filename] || "";
         }
         </script><!DOCTYPE html>
-       <html>
-       <head>
-           <title>Libraries - LibraryBuilder</title>
-           <link rel="icon" href="/static/favicon.png">
-           <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-           <link rel="stylesheet" href="/static/styles.css">
-       </head>
-       <body>
-           <nav class="navbar navbar-expand-lg navbar-light">
-               <div class="container">
-                   <a class="navbar-brand" href="/">
-                       <img src="/static/logo.png" alt="LibraryBuilder Logo">
-                   </a>
-                   <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                       <span class="navbar-toggler-icon"></span>
-                   </button>
-                   <div class="collapse navbar-collapse" id="navbarNav">
-                       <ul class="navbar-nav justify-content-center flex-grow-1">
-                           <li class="nav-item">
-                               <a class="nav-link" href="/">Home</a>
-                           </li>
-                           <li class="nav-item">
-                               <a class="nav-link active" href="/libraries">Libraries</a>
-                           </li>
-                           <li class="nav-item">
-                               <a class="nav-link" href="/prompts">Prompts</a>
-                           </li>
-                           <li class="nav-item">
-                               <a class="nav-link" href="/crawl">Crawl</a>
-                           </li>
-                           <li class="nav-item">
-                               <a class="nav-link" href="/search">Search</a>
-                           </li>
-                           <li class="nav-item">
-                               <a class="nav-link" href="/logout">Logout</a>
-                           </li>
-                       </ul>
-                   </div>
-               </div>
-           </nav>
-           <div class="container">
-               <h1>Manage Libraries</h1>
-               {% with messages = get_flashed_messages(with_categories=true) %}
-                   {% if messages %}
-                       {% for category, message in messages %}
-                           <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
-                       {% endfor %}
-                   {% endif %}
-               {% endwith %}
-               <div class="card">
-                   <div class="card-body">
-                       <h5 class="card-title">Create New Library</h5>
-                       <form method="post">
-                           <div class="mb-3">
-                               <label for="name" class="form-label">Library Name</label>
-                               <input type="text" class="form-control" id="name" name="name" required>
-                           </div>
-                           <button type="submit" class="btn btn-primary">Create Library</button>
-                       </form>
-                   </div>
-               </div>
-               <h2>Your Libraries</h2>
-               {% if libraries %}
-                   {% for library in libraries %}
-                       <div class="card">
-                           <div class="card-body">
-                               <h5 class="card-title">{{ library[1] }}</h5>
-                               <div class="btn-group">
-                                   <a href="{{ url_for('view_library', library_id=library[0]) }}" class="btn btn-outline-primary btn-sm">View Contents</a>
-                                   <a href="{{ url_for('crawl', library_id=library[0]) }}" class="btn btn-outline-success btn-sm">Crawl More</a>
-                               </div>
-                           </div>
-                       </div>
-                   {% endfor %}
-               {% else %}
-                   <p>No libraries found. Create one above!</p>
-               {% endif %}
-           </div>
-           <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-       </body>
-       </html>
+    <html>
+    <head>
+        <title>Libraries - LibraryBuilder</title>
+        <link rel="icon" href="/static/favicon.png">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="/static/styles.css">
+    </head>
+    <body>
+        <nav class="navbar navbar-expand-lg navbar-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/">
+                    <img src="/static/logo.png" alt="LibraryBuilder Logo">
+                </a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav justify-content-center flex-grow-1">
+                        <li class="nav-item">
+                            <a class="nav-link" href="/">Home</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link active" href="/libraries">Libraries</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/prompts">Prompts</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/crawl">Crawl</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/search">Search</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/logout">Logout</a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+        <div class="container">
+            <h1>Manage Libraries</h1>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Create New Library</h5>
+                    <form method="post">
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Library Name</label>
+                            <input type="text" class="form-control" id="name" name="name" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Create Library</button>
+                    </form>
+                </div>
+            </div>
+            <h2>Your Libraries</h2>
+            {% if libraries %}
+                {% for library in libraries %}
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">{{ library[1] }}</h5>
+                            <div class="btn-group">
+                                <a href="{{ url_for('view_library', library_id=library[0]) }}" class="btn btn-outline-primary btn-sm">View Contents</a>
+                                <a href="{{ url_for('crawl', library_id=library[0]) }}" class="btn btn-outline-success btn-sm">Crawl More</a>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>No libraries found. Create one above!</p>
+            {% endif %}
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    </body>
+    </html>

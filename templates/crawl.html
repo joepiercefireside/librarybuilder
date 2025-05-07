@@ -38,109 +38,109 @@
         return gk_fileData[filename] || "";
         }
         </script><!DOCTYPE html>
-<html>
-<head>
-    <title>Crawl - LibraryBuilder</title>
-    <link rel="icon" href="/static/favicon.png">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css">
-    <script>
-        function startProgress() {
-            const source = new EventSource('/crawl_progress');
-            const progressDiv = document.getElementById('progress');
-            source.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                progressDiv.innerHTML = `
-                    <p><strong>Links Found:</strong> ${data.links_found}</p>
-                    <p><strong>Links Scanned:</strong> ${data.links_scanned}</p>
-                    <p><strong>Pages Crawled:</strong> ${data.items_crawled}</p>
-                    <p><strong>Status:</strong> ${data.status}</p>
-                `;
-                if (data.status === 'complete' || data.status.startsWith('error')) {
+    <html>
+    <head>
+        <title>Crawl - LibraryBuilder</title>
+        <link rel="icon" href="/static/favicon.png">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="/static/styles.css">
+        <script>
+            function startProgress() {
+                const source = new EventSource('/crawl_progress');
+                const progressDiv = document.getElementById('progress');
+                source.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    progressDiv.innerHTML = `
+                        <p><strong>Links Found:</strong> ${data.links_found}</p>
+                        <p><strong>Links Scanned:</strong> ${data.links_scanned}</p>
+                        <p><strong>Pages Crawled:</strong> ${data.items_crawled}</p>
+                        <p><strong>Status:</strong> ${data.status}</p>
+                    `;
+                    if (data.status === 'complete' || data.status.startsWith('error')) {
+                        source.close();
+                    }
+                };
+                source.onerror = function() {
+                    progressDiv.innerHTML = '<p class="text-danger">Error fetching progress.</p>';
                     source.close();
+                };
+            }
+            window.onload = function() {
+                if (document.getElementById('progress')) {
+                    startProgress();
                 }
             };
-            source.onerror = function() {
-                progressDiv.innerHTML = '<p class="text-danger">Error fetching progress.</p>';
-                source.close();
-            };
-        }
-        window.onload = function() {
-            if (document.getElementById('progress')) {
-                startProgress();
-            }
-        };
-    </script>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-light">
+        </script>
+    </head>
+    <body>
+        <nav class="navbar navbar-expand-lg navbar-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/">
+                    <img src="/static/logo.png" alt="LibraryBuilder Logo">
+                </a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav justify-content-center flex-grow-1">
+                        <li class="nav-item">
+                            <a class="nav-link" href="/">Home</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/libraries">Libraries</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/prompts">Prompts</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link active" href="/crawl">Crawl</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/search">Search</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/logout">Logout</a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
         <div class="container">
-            <a class="navbar-brand" href="/">
-                <img src="/static/logo.png" alt="LibraryBuilder Logo">
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav justify-content-center flex-grow-1">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/">Home</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/libraries">Libraries</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/prompts">Prompts</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/crawl">Crawl</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/search">Search</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/logout">Logout</a>
-                    </li>
-                </ul>
+            <h1>Crawl Administration</h1>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Add Content to Library</h5>
+                    <form method="post">
+                        <div class="mb-3">
+                            <label for="url" class="form-label">Website URL</label>
+                            <input type="text" class="form-control" id="url" name="url" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="library_id" class="form-label">Select Library</label>
+                            <select class="form-select" id="library_id" name="library_id" required>
+                                <option value="">Select a library</option>
+                                {% for library in libraries %}
+                                    <option value="{{ library[0] }}" {% if library_id == library[0] %}selected{% endif %}>{{ library[1] }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary" onclick="startProgress()">Start Crawl</button>
+                    </form>
+                </div>
+            </div>
+            <div id="progress" class="card">
+                <div class="card-body">
+                    Waiting for crawl progress...
+                </div>
             </div>
         </div>
-    </nav>
-    <div class="container">
-        <h1>Crawl Administration</h1>
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Add Content to Library</h5>
-                <form method="post">
-                    <div class="mb-3">
-                        <label for="url" class="form-label">Website URL</label>
-                        <input type="text" class="form-control" id="url" name="url" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="library_id" class="form-label">Select Library</label>
-                        <select class="form-select" id="library_id" name="library_id" required>
-                            <option value="">Select a library</option>
-                            {% for library in libraries %}
-                                <option value="{{ library[0] }}" {% if library_id == library[0] %}selected{% endif %}>{{ library[1] }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <button type="submit" class="btn btn-primary" onclick="startProgress()">Start Crawl</button>
-                </form>
-            </div>
-        </div>
-        <div id="progress" class="card">
-            <div class="card-body">
-                Waiting for crawl progress...
-            </div>
-        </div>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    </body>
+    </html>
