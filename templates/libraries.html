@@ -1,87 +1,120 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Libraries - LibraryBuilder</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css">
-    <style>
-        body { background-color: #e9ecef; }
-        .container { max-width: 800px; }
-        .card { margin-bottom: 20px; }
-        .btn-group { margin-left: 10px; }
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-light bg-light">
-        <div class="container">
-            <a class="navbar-brand" href="/">
-                <img src="/static/logo.png" alt="LibraryBuilder Logo" style="height: 40px;">
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/">Home</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/libraries">Libraries</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/prompts">Prompts</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/crawl">Crawl</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/search">Search</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/logout">Logout</a>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-5">
-        <h1 class="mb-4">Manage Libraries</h1>
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Create New Library</h5>
-                <form method="post">
-                    <div class="mb-3">
-                        <label for="name" class="form-label">Library Name</label>
-                        <input type="text" class="form-control" id="name" name="name" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Create Library</button>
-                </form>
-            </div>
-        </div>
-        <h2 class="mt-4">Your Libraries</h2>
-        {% if libraries %}
-            {% for library in libraries %}
-                <div class="card">
-                    <div class="card-body">
-                        <h5 class="card-title">{{ library[1] }}</h5>
-                        <div class="btn-group">
-                            <a href="{{ url_for('view_library', library_id=library[0]) }}" class="btn btn-outline-primary btn-sm">View Contents</a>
-                            <a href="{{ url_for('crawl', library_id=library[0]) }}" class="btn btn-outline-success btn-sm">Crawl More</a>
-                        </div>
-                    </div>
-                </div>
-            {% endfor %}
-        {% else %}
-            <p>No libraries found. Create one above!</p>
-        {% endif %}
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+       <html>
+       <head>
+           <title>Libraries - LibraryBuilder</title>
+           <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+           <link rel="stylesheet" href="/static/styles.css">
+       </head>
+       <body>
+           <nav class="navbar navbar-expand-lg navbar-light">
+               <div class="container">
+                   <a class="navbar-brand" href="/">
+                       <img src="/static/logo.png" alt="LibraryBuilder Logo">
+                   </a>
+                   <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                       <span class="navbar-toggler-icon"></span>
+                   </button>
+                   <div class="collapse navbar-collapse justify-content-center" id="navbarNav">
+                       <ul class="navbar-nav">
+                           <li class="nav-item">
+                               <a class="nav-link" href="/">Home</a>
+                           </li>
+                           <li class="nav-item">
+                               <a class="nav-link active" href="/libraries">Libraries</a>
+                           </li>
+                           <li class="nav-item">
+                               <a class="nav-link" href="/prompts">Prompts</a>
+                           </li>
+                           <li class="nav-item">
+                               <a class="nav-link" href="/crawl">Crawl</a>
+                           </li>
+                           <li class="nav-item">
+                               <a class="nav-link" href="/search">Search</a>
+                           </li>
+                           <li class="nav-item">
+                               <a class="nav-link" href="/logout">Logout</a>
+                           </li>
+                       </ul>
+                   </div>
+               </div>
+           </nav>
+           <div class="container">
+               <h1>Manage Libraries</h1>
+               {% with messages = get_flashed_messages(with_categories=true) %}
+                   {% if messages %}
+                       {% for category, message in messages %}
+                           <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
+                       {% endfor %}
+                   {% endif %}
+               {% endwith %}
+               <div class="card">
+                   <div class="card-body">
+                       <h5 class="card-title">Create New Library</h5>
+                       <form method="post">
+                           <div class="mb-3">
+                               <label for="name" class="form-label">Library Name</label>
+                               <input type="text" class="form-control" id="name" name="name" required>
+                           </div>
+                           <button type="submit" class="btn btn-primary">Create Library</button>
+                       </form>
+                   </div>
+               </div>
+               <h2>Your Libraries</h2>
+               {% if libraries %}
+                   {% for library in libraries %}
+                       <div class="card">
+                           <div class="card-body">
+                               <h5 class="card-title">{{ library[1] }}</h5>
+                               <div class="btn-group">
+                                   <a href="{{ url_for('view_library', library_id=library[0]) }}" class="btn btn-outline-primary btn-sm">View Contents</a>
+                                   <a href="{{ url_for('crawl', library_id=library[0]) }}" class="btn btn-outline-success btn-sm">Crawl More</a>
+                               </div>
+                           </div>
+                       </div>
+                   {% endfor %}
+               {% else %}
+                   <p>No libraries found. Create one above!</p>
+               {% endif %}
+           </div>
+           <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+       </body>
+       </html>
