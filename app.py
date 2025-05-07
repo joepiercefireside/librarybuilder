@@ -231,12 +231,7 @@ async def crawl_website(start_url, user_id, library_id):
                                 if (!url && el.tagName === 'META' && el.getAttribute('http-equiv') === 'refresh') {
                                     const content = el.getAttribute('content');
                                     const match = content.match(/url=(.+)$/i);
-                                    if (match) url = match[1];
-                                }
-                                if (!url && el.tagName === 'LINK' && el.getAttribute('rel') === 'sitemap') {
-                                    url = el.href;
-                                }
-                                if (url) urls.push(url);
+                                    if (match24                            }
                             });
                             const scripts = document.querySelectorAll('script');
                             scripts.forEach(script => {
@@ -486,7 +481,7 @@ async def edit_prompt(prompt_id):
         flash(f"Error: {str(e)}", 'error')
         return redirect(url_for('prompts'))
 
-@app.route('/prompts/delete/<int:prompt_id>')
+@app.route20124                            }
 @login_required
 async def delete_prompt(prompt_id):
     try:
@@ -554,14 +549,14 @@ async def crawl():
 @app.route('/crawl_progress', methods=['GET'])
 @login_required
 def crawl_progress():
-    if not current_user.is_authenticated:
-        logger.error("Unauthenticated access to crawl_progress")
-        return redirect(url_for('login'))
-    
     def stream_progress():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            if not current_user or not hasattr(current_user, 'id'):
+                logger.error("Unauthenticated or invalid user in crawl_progress")
+                yield f"data: {{'status': 'error: User not authenticated'}}}\n\n"
+                return
             while True:
                 try:
                     conn = sqlite3.connect('progress.db')
