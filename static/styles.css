@@ -5,20 +5,24 @@ body {
          padding: 0;
      }
      .navbar {
-         background-color: #ffffff;
+         background-color: #00689B;
          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
          padding: 10px 0;
      }
      .navbar-brand img {
          height: 40px;
      }
+     .navbar-nav {
+         flex-grow: 1;
+         justify-content: center;
+     }
      .navbar-nav .nav-link {
-         color: #333;
+         color: #ffffff;
          font-weight: 500;
          margin: 0 15px;
      }
      .navbar-nav .nav-link:hover {
-         color: #007bff;
+         color: #e0f7ff;
      }
      .container {
          max-width: 800px;
@@ -44,18 +48,46 @@ body {
          padding: 20px;
      }
      .btn-primary {
-         background-color: #007bff;
-         border-color: #007bff;
+         background-color: #00689B;
+         border-color: #00689B;
          border-radius: 5px;
          padding: 10px 20px;
+         color: #ffffff;
      }
      .btn-primary:hover {
-         background-color: #0056b3;
-         border-color: #0056b3;
+         background-color: #004d73;
+         border-color: #004d73;
+         color: #ffffff;
      }
-     .btn-outline-primary, .btn-outline-success, .btn-outline-danger {
+     .btn-outline-primary {
+         border-color: #00689B;
+         color: #00689B;
          border-radius: 5px;
          padding: 5px 10px;
+     }
+     .btn-outline-primary:hover {
+         background-color: #00689B;
+         color: #ffffff;
+     }
+     .btn-outline-success {
+         border-color: #28a745;
+         color: #28a745;
+         border-radius: 5px;
+         padding: 5px 10px;
+     }
+     .btn-outline-success:hover {
+         background-color: #28a745;
+         color: #ffffff;
+     }
+     .btn-outline-danger {
+         border-color: #dc3545;
+         color: #dc3545;
+         border-radius: 5px;
+         padding: 5px 10px;
+     }
+     .btn-outline-danger:hover {
+         background-color: #dc3545;
+         color: #ffffff;
      }
      .alert {
          border-radius: 5px;
