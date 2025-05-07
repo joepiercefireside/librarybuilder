@@ -231,7 +231,12 @@ async def crawl_website(start_url, user_id, library_id):
                                 if (!url && el.tagName === 'META' && el.getAttribute('http-equiv') === 'refresh') {
                                     const content = el.getAttribute('content');
                                     const match = content.match(/url=(.+)$/i);
-                                    if (match24                            }
+                                    if (match) url = match[1];
+                                }
+                                if (!url && el.tagName === 'LINK' && el.getAttribute('rel') === 'sitemap') {
+                                    url = el.href;
+                                }
+                                if (url) urls.push(url);
                             });
                             const scripts = document.querySelectorAll('script');
                             scripts.forEach(script => {
@@ -481,7 +486,7 @@ async def edit_prompt(prompt_id):
         flash(f"Error: {str(e)}", 'error')
         return redirect(url_for('prompts'))
 
-@app.route20124                            }
+@app.route('/prompts/delete/<int:prompt_id>')
 @login_required
 async def delete_prompt(prompt_id):
     try:
