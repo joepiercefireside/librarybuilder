@@ -160,6 +160,21 @@ def query_grok_api(query, context, prompt):
         logger.error(f"Error querying xAI Grok API: {str(e)}\n{traceback.format_exc()}")
         return f"Fallback: Unable to generate AI summary. Please check API key or endpoint."
 
+def normalize_url(url):
+    """Normalize URL by adding https:// if missing and ensuring proper format."""
+    if not url:
+        return None
+    url = url.strip()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.netloc:
+            return None
+        return parsed.geturl()
+    except ValueError:
+        return None
+
 async def crawl_website(start_url, user_id, library_id):
     logger.info(f"Starting crawl for {start_url} by user {user_id} in library {library_id}")
     process = psutil.Process()
@@ -428,6 +443,29 @@ async def delete_library_content(content_id):
         flash(f"Error: {str(e)}", 'error')
         return redirect(url_for('libraries'))
 
+@app.route('/libraries/delete/<int:library_id>')
+@login_required
+async def delete_library(library_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM libraries WHERE id = %s AND user_id = %s", (library_id, int(current_user.id)))
+        if not cur.fetchone():
+            flash('Library not found.', 'error')
+            return redirect(url_for('libraries'))
+        
+        cur.execute("DELETE FROM documents WHERE library_id = %s", (library_id,))
+        cur.execute("DELETE FROM libraries WHERE id = %s AND user_id = %s", (library_id, int(current_user.id)))
+        conn.commit()
+        cur.close()
+        conn.close()
+        flash('Library and its contents deleted successfully.', 'success')
+        return redirect(url_for('libraries'))
+    except Exception as e:
+        logger.error(f"Error in delete_library endpoint: {e}\n{traceback.format_exc()}")
+        flash(f"Error: {str(e)}", 'error')
+        return redirect(url_for('libraries'))
+
 @app.route('/add_library', methods=['POST'])
 @login_required
 async def add_library():
@@ -537,7 +575,7 @@ async def crawl():
         conn.close()
         
         if request.method == 'POST':
-            start_url = request.form.get('url')
+            start_url = normalize_url(request.form.get('url'))
             library_id = request.form.get('library_id')
             if not start_url or not library_id:
                 flash('URL and library selection cannot be empty.', 'error')
@@ -580,8 +618,6 @@ def crawl_progress():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            # Log session and user details for debugging
-            logger.info(f"crawl_progress: session={session.get('_id')}, user_id={current_user.id if current_user.is_authenticated else 'None'}, is_authenticated={current_user.is_authenticated}")
             if not current_user.is_authenticated:
                 logger.error("Unauthenticated user in crawl_progress")
                 yield f"data: {{'status': 'error: User not authenticated'}}\n\n"

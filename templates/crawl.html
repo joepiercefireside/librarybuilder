@@ -7,33 +7,44 @@
     <link rel="stylesheet" href="/static/styles.css">
     <script>
         function startProgress() {
-            const source = new EventSource('/crawl_progress', { withCredentials: true });
-            const progressDiv = document.getElementById('progress');
-            source.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                progressDiv.innerHTML = `
-                    <p><strong>Links Found:</strong> ${data.links_found}</p>
-                    <p><strong>Links Scanned:</strong> ${data.links_scanned}</p>
-                    <p><strong>Pages Crawled:</strong> ${data.items_crawled}</p>
-                    <p><strong>Status:</strong> ${data.status}</p>
-                `;
-                if (data.status === 'complete' || data.status.startsWith('error')) {
+            function connectEventSource() {
+                const source = new EventSource('/crawl_progress', { withCredentials: true });
+                const progressDiv = document.getElementById('progress');
+                source.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    progressDiv.innerHTML = `
+                        <p><strong>Links Found:</strong> ${data.links_found}</p>
+                        <p><strong>Links Scanned:</strong> ${data.links_scanned}</p>
+                        <p><strong>Pages Crawled:</strong> ${data.items_crawled}</p>
+                        <p><strong>Status:</strong> ${data.status}</p>
+                    `;
+                    if (data.status === 'complete' || data.status.startsWith('error')) {
+                        source.close();
+                    }
+                };
+                source.onerror = function() {
+                    progressDiv.innerHTML = '<p class="text-danger">Error fetching progress. Retrying...</p>';
                     source.close();
-                }
-            };
-            source.onerror = function() {
-                progressDiv.innerHTML = '<p class="text-danger">Error fetching progress.</p>';
-                source.close();
-            };
+                    setTimeout(connectEventSource, 3000); // Retry after 3 seconds
+                };
+            }
+            connectEventSource();
         }
 
         function checkLibraryInput() {
             const input = document.getElementById('library_name').value.trim();
             const addButton = document.getElementById('add_library_button');
             const options = Array.from(document.querySelectorAll('#library_list option')).map(opt => opt.value.trim());
-            if (input && !options.includes(input)) {
+            const selectedOption = options.find(opt => opt === input);
+            if (selectedOption) {
+                const option = document.querySelector(`#library_list option[value="${input}"]`);
+                document.getElementById('library_id').value = option ? option.dataset.id : '';
+                addButton.style.display = 'none';
+            } else if (input) {
+                document.getElementById('library_id').value = '';
                 addButton.style.display = 'block';
             } else {
+                document.getElementById('library_id').value = '';
                 addButton.style.display = 'none';
             }
         }
