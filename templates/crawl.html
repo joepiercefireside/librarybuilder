@@ -7,13 +7,19 @@
     <link rel="stylesheet" href="/static/styles.css">
     <script>
         function startProgress() {
+            const progressDiv = document.getElementById('progress');
+            progressDiv.innerHTML = `
+                <p><strong>Links Found:</strong> 0</p>
+                <p><strong>Links Scanned:</strong> 0</p>
+                <p><strong>Pages Crawled:</strong> 0</p>
+                <p><strong>Status:</strong> waiting</p>
+            `;
             function connectEventSource() {
                 const source = new EventSource('/crawl_progress', { withCredentials: true });
-                const progressDiv = document.getElementById('progress');
                 source.onmessage = function(event) {
                     const data = JSON.parse(event.data);
                     if (data.status && data.status.startsWith('error')) {
-                        progressDiv.innerHTML = '<p class="text-danger">Error: ' + data.status + '</p>';
+                        progressDiv.innerHTML = '<p class="text-info">Please log in again to continue crawling.</p>';
                         source.close();
                         setTimeout(connectEventSource, 3000);
                         return;
@@ -29,7 +35,7 @@
                     }
                 };
                 source.onerror = function() {
-                    progressDiv.innerHTML = '<p class="text-danger">Error fetching progress. Retrying...</p>';
+                    progressDiv.innerHTML = '<p class="text-info">Connecting to crawl progress... Retrying...</p>';
                     source.close();
                     setTimeout(connectEventSource, 3000);
                 };
@@ -129,7 +135,7 @@
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
-                    <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
+                    <div class="alert alert-{{ 'success' if category == 'success' else 'info' if category == 'info' else 'danger' }}">{{ message }}</div>
                 {% endfor %}
             {% endif %}
         {% endwith %}
@@ -162,7 +168,10 @@
         </div>
         <div id="progress" class="card">
             <div class="card-body">
-                Waiting for crawl progress...
+                <p><strong>Links Found:</strong> 0</p>
+                <p><strong>Links Scanned:</strong> 0</p>
+                <p><strong>Pages Crawled:</strong> 0</p>
+                <p><strong>Status:</strong> waiting</p>
             </div>
         </div>
     </div>

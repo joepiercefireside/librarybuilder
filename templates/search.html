@@ -5,18 +5,6 @@
     <link rel="icon" href="/static/favicon.png">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
-    <script>
-        function linkify(text) {
-            const urlPattern = /(https?:\/\/[^\s]+)/g;
-            return text.replace(urlPattern, '<a href="$1" target="_blank">$1</a>');
-        }
-        window.onload = function() {
-            const resultsDiv = document.getElementById('search-results');
-            if (resultsDiv) {
-                resultsDiv.innerHTML = linkify(resultsDiv.innerText);
-            }
-        };
-    </script>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark">
@@ -92,7 +80,17 @@
         </div>
         {% if query %}
             <h2>Results for "{{ query }}"</h2>
-            <div id="search-results" class="search-results">{{ answer }}</div>
+            <div class="search-results">
+                <p>{{ prompt_answer | replace('\n', '<br>') | safe }}</p>
+            </div>
+            <div class="search-documents">
+                {% for doc in documents %}
+                    <div class="search-document">
+                        <h6><a href="{{ doc.url }}" target="_blank">{{ doc.url }}</a></h6>
+                        <p>{{ doc.snippet }}</p>
+                    </div>
+                {% endfor %}
+            </div>
         {% endif %}
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>

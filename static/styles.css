@@ -100,6 +100,11 @@ h1 {
     border-radius: 5px;
     margin-bottom: 20px;
 }
+.alert-info {
+    background-color: #e6f3fa;
+    border-color: #00689B;
+    color: #004d73;
+}
 #progress {
     background-color: #f8f9fa;
     padding: 15px;
@@ -132,6 +137,28 @@ pre {
 }
 .search-results a:hover {
     color: #F05722;
+}
+.search-documents {
+    margin-top: 20px;
+}
+.search-document {
+    margin-bottom: 15px;
+}
+.search-document h6 {
+    margin: 0;
+    font-size: 1.1rem;
+}
+.search-document h6 a {
+    color: #00689B;
+    text-decoration: none;
+}
+.search-document h6 a:hover {
+    text-decoration: underline;
+}
+.search-document p {
+    margin: 5px 0 0;
+    color: #555;
+    font-size: 0.9rem;
 }
 .add-library-button {
     background-color: #28a745;

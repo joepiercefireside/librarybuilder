@@ -582,28 +582,30 @@ async def crawl():
                 return render_template('crawl.html', libraries=libraries)
             
             logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
-            crawled_data = await crawl_website(start_url, current_user.id, int(library_id))
-            
-            if crawled_data:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                query = """
-                INSERT INTO documents (url, content, embedding, file_path, library_id)
-                VALUES %s
-                ON CONFLICT (url, library_id) DO NOTHING
-                """
-                execute_values(cur, query, crawled_data)
-                conn.commit()
-                cur.close()
-                conn.close()
-                flash(f"Stored {len(crawled_data)} items in library.", 'success')
-            elif not crawled_data:
-                # Flash message set in crawl_website if no new links found
-                pass
-            else:
-                flash("No items crawled.", 'error')
-            
-            return redirect(url_for('crawl'))
+            try:
+                crawled_data = await crawl_website(start_url, current_user.id, int(library_id))
+                
+                if crawled_data:
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+                    query = """
+                    INSERT INTO documents (url, content, embedding, file_path, library_id)
+                    VALUES %s
+                    ON CONFLICT (url, library_id) DO NOTHING
+                    """
+                    execute_values(cur, query, crawled_data)
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    flash(f"Stored {len(crawled_data)} items in library.", 'success')
+                else:
+                    flash("All pages from that link have already been added to the library.", 'info')
+                
+                return redirect(url_for('crawl'))
+            except psycopg2.errors.UniqueViolation as e:
+                logger.info(f"Duplicate URL detected: {str(e)}")
+                flash("All pages from that link have already been added to the library.", 'info')
+                return redirect(url_for('crawl'))
         
         return render_template('crawl.html', libraries=libraries)
     except Exception as e:
@@ -618,8 +620,8 @@ def crawl_progress():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            if current_user is None or not current_user.is_authenticated:
-                logger.error("Unauthenticated user in crawl_progress: current_user is None or not authenticated")
+            if not current_user or not current_user.is_authenticated:
+                logger.error("Unauthenticated user in crawl_progress: current_user=%s" % current_user)
                 yield f"data: {{'status': 'error: User not authenticated'}}\n\n"
                 return
             while True:
@@ -630,14 +632,13 @@ def crawl_progress():
                               (current_user.id,))
                     result = c.fetchone()
                     conn.close()
-                    if result:
-                        data = {
-                            "links_found": result[0],
-                            "links_scanned": result[1],
-                            "items_crawled": result[2],
-                            "status": result[3]
-                        }
-                        yield f"data: {json.dumps(data)}\n\n"
+                    data = {
+                        "links_found": result[0] if result else 0,
+                        "links_scanned": result[1] if result else 0,
+                        "items_crawled": result[2] if result else 0,
+                        "status": result[3] if result else "waiting"
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
                     if result and result[3] in ["complete", "error"]:
                         break
                     time.sleep(1)
@@ -698,20 +699,22 @@ async def search():
                 return render_template('search.html', libraries=libraries, prompts=prompts)
             
             context = "\n\n".join([result[2] for result in results])
-            answer = query_grok_api(query, context, prompt[0])
-            if not answer.startswith("Error") and not answer.startswith("Fallback"):
-                answer = f"Answer to '{query}':\n\n{answer}\n\nRelevant Documents:"
-            else:
-                answer = f"Answer to '{query}':\n\n{answer}\n\nRelevant Documents:"
+            prompt_answer = query_grok_api(query, context, prompt[0])
+            if prompt_answer.startswith("Error") or prompt_answer.startswith("Fallback"):
+                prompt_answer = f"{prompt_answer}\n\nRelevant Documents:"
             
-            for result in results:
-                url, content, file_path = result[1], result[2], result[3]
-                answer += f"\n- {content[:100]}... (Source: {url or file_path})"
+            documents = [
+                {
+                    "url": result[1] or result[3],
+                    "snippet": result[2][:100] + ("..." if len(result[2]) > 100 else "")
+                }
+                for result in results
+            ]
             
             if not results:
-                answer += "\nNo relevant content found."
+                documents = [{"url": "", "snippet": "No relevant content found."}]
             
-            return render_template('search.html', libraries=libraries, prompts=prompts, results=results, query=query, answer=answer)
+            return render_template('search.html', libraries=libraries, prompts=prompts, query=query, prompt_answer=prompt_answer, documents=documents)
         
         return render_template('search.html', libraries=libraries, prompts=prompts)
     except Exception as e:
