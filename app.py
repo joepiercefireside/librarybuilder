@@ -41,7 +41,7 @@ def init_progress_db():
     conn = sqlite3.connect('progress.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS progress
-                 (user_id TEXT, url TEXT, library_id INTEGER, links_found INTEGER, links_scanned INTEGER, items_crawled INTEGER, status TEXT)''')
+                 (user_id TEXT, url TEXT, library_id INTEGER, links_found INTEGER, links_scanned INTEGER, items_crawled INTEGER, status TEXT, current_url TEXT)''')
     conn.commit()
     conn.close()
 
@@ -191,8 +191,8 @@ async def crawl_website(start_url, user_id, library_id):
     
     conn = sqlite3.connect('progress.db')
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO progress (user_id, url, library_id, links_found, links_scanned, items_crawled, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-              (user_id, start_url, library_id, links_found, links_scanned, items_crawled, "running"))
+    c.execute("INSERT OR REPLACE INTO progress (user_id, url, library_id, links_found, links_scanned, items_crawled, status, current_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              (user_id, start_url, library_id, links_found, links_scanned, items_crawled, "running", start_url))
     conn.commit()
     
     try:
@@ -207,6 +207,11 @@ async def crawl_website(start_url, user_id, library_id):
                     visited_urls.add(url)
                     links_scanned += 1
                     logger.debug(f"Scanning URL: {url}")
+                    
+                    # Update current_url in progress
+                    c.execute("UPDATE progress SET current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                              (url, user_id, start_url, library_id))
+                    conn.commit()
                     
                     try:
                         page = await browser.new_page()
@@ -288,8 +293,8 @@ async def crawl_website(start_url, user_id, library_id):
                         conn.close()
                         return crawled_data
                 logger.info(f"Crawl complete: items_crawled={items_crawled}")
-                c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                          ("complete", user_id, start_url, library_id))
+                c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                          ("complete", "", user_id, start_url, library_id))
                 conn.commit()
             finally:
                 await browser.close()
@@ -299,8 +304,8 @@ async def crawl_website(start_url, user_id, library_id):
         return crawled_data
     except Exception as e:
         logger.error(f"Unexpected error in crawl_website: {str(e)}\n{traceback.format_exc()}")
-        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                  (f"error: {str(e)}", user_id, start_url, library_id))
+        c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                  (f"error: {str(e)}", "", user_id, start_url, library_id))
         conn.commit()
         conn.close()
         return crawled_data
@@ -616,40 +621,44 @@ async def crawl():
 @app.route('/crawl_progress', methods=['GET'])
 @login_required
 def crawl_progress():
-    def stream_progress():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            if not current_user or not current_user.is_authenticated:
-                logger.error("Unauthenticated user in crawl_progress: current_user=%s" % current_user)
-                yield f"data: {{'status': 'error: User not authenticated'}}\n\n"
-                return
-            while True:
-                try:
-                    conn = sqlite3.connect('progress.db')
-                    c = conn.cursor()
-                    c.execute("SELECT links_found, links_scanned, items_crawled, status FROM progress WHERE user_id = ? ORDER BY rowid DESC LIMIT 1",
-                              (current_user.id,))
-                    result = c.fetchone()
-                    conn.close()
-                    data = {
-                        "links_found": result[0] if result else 0,
-                        "links_scanned": result[1] if result else 0,
-                        "items_crawled": result[2] if result else 0,
-                        "status": result[3] if result else "waiting"
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
-                    if result and result[3] in ["complete", "error"]:
-                        break
-                    time.sleep(1)
-                except Exception as e:
-                    logger.error(f"Error in crawl_progress: {e}\n{traceback.format_exc()}")
-                    yield f"data: {{'status': 'error: {str(e)}'}}\n\n"
-                    break
-        finally:
-            loop.close()
-    
-    return Response(stream_progress(), mimetype='text/event-stream')
+    try:
+        if not current_user or not current_user.is_authenticated:
+            logger.error("Unauthenticated user in crawl_progress: current_user=%s" % current_user)
+            return jsonify({"status": "error", "message": "User not authenticated"}), 401
+        conn = sqlite3.connect('progress.db')
+        c = conn.cursor()
+        c.execute("SELECT links_found, links_scanned, items_crawled, status FROM progress WHERE user_id = ? AND url = ? AND library_id = ? ORDER BY rowid DESC LIMIT 1",
+                  (current_user.id, request.args.get('url'), request.args.get('library_id')))
+        result = c.fetchone()
+        conn.close()
+        data = {
+            "links_found": result[0] if result else 0,
+            "links_scanned": result[1] if result else 0,
+            "items_crawled": result[2] if result else 0,
+            "status": result[3] if result else "waiting"
+        }
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Error in crawl_progress: {e}\n{traceback.format_exc()}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/current_url', methods=['GET'])
+@login_required
+def current_url():
+    try:
+        if not current_user or not current_user.is_authenticated:
+            logger.error("Unauthenticated user in current_url: current_user=%s" % current_user)
+            return jsonify({"status": "error", "message": "User not authenticated"}), 401
+        conn = sqlite3.connect('progress.db')
+        c = conn.cursor()
+        c.execute("SELECT current_url FROM progress WHERE user_id = ? AND url = ? AND library_id = ? ORDER BY rowid DESC LIMIT 1",
+                  (current_user.id, request.args.get('url'), request.args.get('library_id')))
+        result = c.fetchone()
+        conn.close()
+        return jsonify({"current_url": result[0] if result and result[0] else ""})
+    except Exception as e:
+        logger.error(f"Error in current_url: {e}\n{traceback.format_exc()}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/search', methods=['GET', 'POST'])
 @login_required

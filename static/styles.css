@@ -171,3 +171,16 @@ pre {
     background-color: #218838;
     border-color: #218838;
 }
+.current-url {
+    margin-left: 10px;
+    font-size: 0.9rem;
+    color: #004d73;
+}
+.current-url.flash {
+    animation: flash 0.5s;
+}
+@keyframes flash {
+    0% { opacity: 1; }
+    50% { opacity: 0.3; }
+    100% { opacity: 1; }
+}
