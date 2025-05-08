@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, session
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import psycopg2
 from psycopg2.extras import execute_values
@@ -337,6 +337,7 @@ async def login():
             conn.close()
             if user and check_password_hash(user[2], password):
                 login_user(User(user[0], user[1]), remember=True)
+                session.permanent = True
                 logger.info(f"User {email} logged in successfully")
                 return redirect(url_for('index'))
             flash('Invalid email or password.', 'error')
@@ -426,6 +427,27 @@ async def delete_library_content(content_id):
         logger.error(f"Error in delete_library_content endpoint: {e}\n{traceback.format_exc()}")
         flash(f"Error: {str(e)}", 'error')
         return redirect(url_for('libraries'))
+
+@app.route('/add_library', methods=['POST'])
+@login_required
+async def add_library():
+    try:
+        name = request.form.get('name')
+        if not name:
+            flash('Library name cannot be empty.', 'error')
+            return jsonify({'status': 'error', 'message': 'Library name cannot be empty'}), 400
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO libraries (user_id, name) VALUES (%s, %s) RETURNING id", (int(current_user.id), name))
+        library_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'status': 'success', 'library_id': library_id, 'library_name': name})
+    except Exception as e:
+        logger.error(f"Error in add_library endpoint: {e}\n{traceback.format_exc()}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/prompts', methods=['GET', 'POST'])
 @login_required
@@ -558,6 +580,8 @@ def crawl_progress():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            # Log session and user details for debugging
+            logger.info(f"crawl_progress: session={session.get('_id')}, user_id={current_user.id if current_user.is_authenticated else 'None'}, is_authenticated={current_user.is_authenticated}")
             if not current_user.is_authenticated:
                 logger.error("Unauthenticated user in crawl_progress")
                 yield f"data: {{'status': 'error: User not authenticated'}}\n\n"
