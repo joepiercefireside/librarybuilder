@@ -12,6 +12,12 @@
                 const progressDiv = document.getElementById('progress');
                 source.onmessage = function(event) {
                     const data = JSON.parse(event.data);
+                    if (data.status && data.status.startsWith('error')) {
+                        progressDiv.innerHTML = '<p class="text-danger">Error: ' + data.status + '</p>';
+                        source.close();
+                        setTimeout(connectEventSource, 3000);
+                        return;
+                    }
                     progressDiv.innerHTML = `
                         <p><strong>Links Found:</strong> ${data.links_found}</p>
                         <p><strong>Links Scanned:</strong> ${data.links_scanned}</p>
@@ -25,32 +31,27 @@
                 source.onerror = function() {
                     progressDiv.innerHTML = '<p class="text-danger">Error fetching progress. Retrying...</p>';
                     source.close();
-                    setTimeout(connectEventSource, 3000); // Retry after 3 seconds
+                    setTimeout(connectEventSource, 3000);
                 };
             }
             connectEventSource();
         }
 
-        function checkLibraryInput() {
-            const input = document.getElementById('library_name').value.trim();
-            const addButton = document.getElementById('add_library_button');
-            const options = Array.from(document.querySelectorAll('#library_list option')).map(opt => opt.value.trim());
-            const selectedOption = options.find(opt => opt === input);
-            if (selectedOption) {
-                const option = document.querySelector(`#library_list option[value="${input}"]`);
-                document.getElementById('library_id').value = option ? option.dataset.id : '';
-                addButton.style.display = 'none';
-            } else if (input) {
-                document.getElementById('library_id').value = '';
-                addButton.style.display = 'block';
+        function toggleNewLibraryInput() {
+            const select = document.getElementById('library_select');
+            const newLibraryDiv = document.getElementById('new_library_input');
+            const libraryIdInput = document.getElementById('library_id');
+            if (select.value === 'other') {
+                newLibraryDiv.style.display = 'block';
+                libraryIdInput.value = '';
             } else {
-                document.getElementById('library_id').value = '';
-                addButton.style.display = 'none';
+                newLibraryDiv.style.display = 'none';
+                libraryIdInput.value = select.value;
             }
         }
 
         function addLibrary() {
-            const name = document.getElementById('library_name').value.trim();
+            const name = document.getElementById('new_library_name').value.trim();
             if (!name) {
                 alert('Library name cannot be empty.');
                 return;
@@ -63,14 +64,15 @@
             .then(response => response.json())
             .then(data => {
                 if (data.status === 'success') {
-                    const datalist = document.getElementById('library_list');
+                    const select = document.getElementById('library_select');
                     const option = document.createElement('option');
-                    option.value = data.library_name;
-                    option.dataset.id = data.library_id;
-                    datalist.appendChild(option);
-                    document.getElementById('library_name').value = data.library_name;
+                    option.value = data.library_id;
+                    option.text = data.library_name;
+                    select.insertBefore(option, select.lastElementChild);
+                    select.value = data.library_id;
+                    document.getElementById('new_library_name').value = '';
+                    document.getElementById('new_library_input').style.display = 'none';
                     document.getElementById('library_id').value = data.library_id;
-                    document.getElementById('add_library_button').style.display = 'none';
                     alert('Library created successfully!');
                 } else {
                     alert('Error creating library: ' + data.message);
@@ -85,7 +87,7 @@
             if (document.getElementById('progress')) {
                 startProgress();
             }
-            document.getElementById('library_name').addEventListener('input', checkLibraryInput);
+            document.getElementById('library_select').addEventListener('change', toggleNewLibraryInput);
         };
     </script>
 </head>
@@ -140,14 +142,18 @@
                         <input type="text" class="form-control" id="url" name="url" required>
                     </div>
                     <div class="mb-3">
-                        <label for="library_name" class="form-label">Select or Enter Library</label>
-                        <button type="button" id="add_library_button" class="btn btn-primary mb-2" style="display: none;" onclick="addLibrary()">Add Library</button>
-                        <input type="text" class="form-control" id="library_name" list="library_list" required oninput="checkLibraryInput()">
-                        <datalist id="library_list">
+                        <label for="library_select" class="form-label">Select Library</label>
+                        <select class="form-select" id="library_select" required onchange="toggleNewLibraryInput()">
+                            <option value="">Select a library</option>
                             {% for library in libraries %}
-                                <option value="{{ library[1] }}" data-id="{{ library[0] }}">
+                                <option value="{{ library[0] }}">{{ library[1] }}</option>
                             {% endfor %}
-                        </datalist>
+                            <option value="other">Other</option>
+                        </select>
+                        <div id="new_library_input" style="display: none;" class="mt-2">
+                            <input type="text" class="form-control" id="new_library_name" placeholder="Enter new library name">
+                            <button type="button" class="btn btn-primary mt-2 add-library-button" onclick="addLibrary()">Add Library</button>
+                        </div>
                         <input type="hidden" id="library_id" name="library_id" required>
                     </div>
                     <button type="submit" class="btn btn-primary" onclick="startProgress()">Start Crawl</button>
