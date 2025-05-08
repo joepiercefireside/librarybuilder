@@ -558,8 +558,8 @@ def crawl_progress():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            if not current_user or not hasattr(current_user, 'id'):
-                logger.error("Unauthenticated or invalid user in crawl_progress")
+            if not current_user.is_authenticated:
+                logger.error("Unauthenticated user in crawl_progress")
                 yield f"data: {{'status': 'error: User not authenticated'}}\n\n"
                 return
             while True:
