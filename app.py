@@ -23,6 +23,7 @@ import time
 import pdfplumber
 import aiohttp
 import re
+import io
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -118,13 +119,13 @@ def load_user(user_id):
 def clean_content(html):
     try:
         soup = BeautifulSoup(html, 'html.parser')
-        for element in soup(['script', 'style', 'header', 'footer', 'nav']):
+        for element in soup(['script', 'style', 'header', 'footer', 'nav', 'img', 'video', 'audio']):
             element.decompose()
         text = soup.get_text(separator=' ', strip=True)
         return ' '.join(text.split())[:1000]
     except Exception as e:
         logger.error(f"Error cleaning content: {e}\n{traceback.format_exc()}")
-        return html[:1000]
+        return ""
 
 async def extract_pdf_text(url):
     try:
@@ -151,19 +152,23 @@ async def analyze_page_for_links(page):
         
         html = await page.content()
         prompt = """
-        Analyze the provided HTML to identify potential interactive elements (e.g., buttons, links, dynamic lists, endless scroll triggers) that could reveal additional pages when clicked or scrolled. Suggest specific actions (e.g., click selectors, scroll) to uncover more links. Return a JSON list of actions, each with 'type' ('click' or 'scroll') and 'selector' (CSS selector for click or empty for scroll).
+        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dynamic lists, endless scroll triggers, images with onclick events) that could lead to pages with textual content when clicked or scrolled. Prioritize buttons with labels like 'Browse', 'Learn More', 'Resources', or links within dynamic lists. Suggest specific actions (e.g., click selectors, scroll) to uncover more links, including multi-step paths (e.g., click a button to load a page, then click image links). Return a JSON list of actions, each with 'type' ('click' or 'scroll'), 'selector' (CSS selector for click or empty for scroll), and 'priority' (1 for high, 2 for medium, 3 for low).
         """
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         completion = client.chat.completions.create(
             model="grok-3-latest",
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": f"HTML: {html[:2000]}"}
+                {"role": "user", "content": f"HTML: {html[:4000]}"}
             ],
-            max_tokens=500
+            max_tokens=1000
         )
-        actions = json.loads(completion.choices[0].message.content) if completion.choices[0].message.content else []
-        return actions
+        try:
+            actions = json.loads(completion.choices[0].message.content)
+            return sorted(actions, key=lambda x: x.get('priority', 3))
+        except json.JSONDecodeError:
+            logger.error("Failed to parse Grok API response as JSON")
+            return []
     except Exception as e:
         logger.error(f"Error analyzing page for links: {e}\n{traceback.format_exc()}")
         return []
@@ -205,6 +210,21 @@ def query_grok_api(query, context, prompt):
         logger.error(f"Error querying xAI Grok API: {str(e)}\n{traceback.format_exc()}")
         return f"Fallback: Unable to generate AI summary. Please check API key or endpoint."
 
+def normalize_url(url):
+    """Normalize URL by adding https:// if missing and ensuring proper format."""
+    if not url:
+        return None
+    url = url.strip()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.netloc:
+            return None
+        return parsed.geturl()
+    except ValueError:
+        return None
+
 async def crawl_website(start_url, user_id, library_id):
     logger.info(f"Starting crawl for {start_url} by user {user_id} in library {library_id}")
     process = psutil.Process()
@@ -216,7 +236,7 @@ async def crawl_website(start_url, user_id, library_id):
     links_found = 1
     links_scanned = 0
     items_crawled = 0
-    max_items = 20
+    max_items = 50  # Increased to collect more textual content
     crawled_data = []
     
     conn = sqlite3.connect('progress.db')
@@ -234,8 +254,8 @@ async def crawl_website(start_url, user_id, library_id):
                     if url in visited_urls or not url.startswith(('http://', 'https://')):
                         logger.debug(f"Skipping invalid or visited URL: {url}")
                         continue
-                    # Skip non-textual content
-                    if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg)$', url, re.IGNORECASE):
+                    # Skip non-textual content by file extension
+                    if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
                         logger.debug(f"Skipping non-textual URL: {url}")
                         continue
                     visited_urls.add(url)
@@ -255,19 +275,34 @@ async def crawl_website(start_url, user_id, library_id):
                             await page.close()
                             continue
                         
-                        # Simulate scrolling
-                        await page.evaluate('''() => {
-                            window.scrollTo(0, document.body.scrollHeight);
-                        }''')
-                        await page.wait_for_timeout(2000)
+                        # Simulate scrolling to load dynamic content
+                        for _ in range(3):  # Scroll multiple times to trigger infinite scroll
+                            await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
+                            await page.wait_for_timeout(2000)
                         
                         # Analyze page for dynamic links
                         actions = await analyze_page_for_links(page)
-                        for action in actions:
+                        for action in actions[:5]:  # Limit to top 5 actions to avoid overload
                             try:
                                 if action['type'] == 'click' and action['selector']:
-                                    await page.click(action['selector'], timeout=5000)
-                                    await page.wait_for_timeout(2000)
+                                    elements = await page.query_selector_all(action['selector'])
+                                    for element in elements[:2]:  # Limit clicks per selector
+                                        try:
+                                            await element.click(timeout=5000)
+                                            await page.wait_for_timeout(3000)
+                                            # Check for new content
+                                            new_links = await page.evaluate('''() => {
+                                                return Array.from(document.querySelectorAll('a[href]')).map(a => a.href);
+                                            }''')
+                                            for link in new_links:
+                                                absolute_url = urllib.parse.urljoin(url, link)
+                                                parsed_url = urllib.parse.urlparse(absolute_url)
+                                                if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit and parsed_url.scheme in ('http', 'https'):
+                                                    to_visit.append(absolute_url)
+                                                    links_found += 1
+                                                    logger.debug(f"New link found via click: {absolute_url}, links_found={links_found}")
+                                        except Exception as e:
+                                            logger.debug(f"Error clicking element {action['selector']}: {e}")
                                 elif action['type'] == 'scroll':
                                     await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
                                     await page.wait_for_timeout(2000)
@@ -275,7 +310,7 @@ async def crawl_website(start_url, user_id, library_id):
                                 logger.debug(f"Error performing action {action}: {e}")
                         
                         content_type = response.headers.get('content-type', '').lower()
-                        content = None
+                        cleaned_content = None
                         if 'text/html' in content_type:
                             content = await page.content()
                             cleaned_content = clean_content(content)
@@ -309,7 +344,7 @@ async def crawl_website(start_url, user_id, library_id):
                             document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], link[rel="sitemap"]').forEach(el => {
                                 let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link');
                                 if (!url && el.getAttribute('onclick')) {
-                                    const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign|window\.location\.replace)\(['"]([^'"]+)['"]/);
+                                    const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign| dégagez-vouslocation\.replace)\(['"]([^'"]+)['"]/);
                                     if (match) url = match[1];
                                 }
                                 if (!url && el.tagName === 'META' && el.getAttribute('http-equiv') === 'refresh') {
