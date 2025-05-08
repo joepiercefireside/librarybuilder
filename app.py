@@ -20,6 +20,9 @@ import traceback
 from openai import OpenAI
 import tenacity
 import time
+import pdfplumber
+import aiohttp
+import re
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -123,6 +126,48 @@ def clean_content(html):
         logger.error(f"Error cleaning content: {e}\n{traceback.format_exc()}")
         return html[:1000]
 
+async def extract_pdf_text(url):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200 or 'application/pdf' not in response.headers.get('Content-Type', ''):
+                    return None
+                pdf_data = await response.read()
+                with pdfplumber.open(io.BytesIO(pdf_data)) as pdf:
+                    text = ''
+                    for page in pdf.pages:
+                        text += page.extract_text() or ''
+                    return ' '.join(text.split())[:1000] if text else None
+    except Exception as e:
+        logger.error(f"Error extracting PDF text from {url}: {e}\n{traceback.format_exc()}")
+        return None
+
+async def analyze_page_for_links(page):
+    try:
+        api_key = os.environ.get('XAI_API_KEY')
+        if not api_key:
+            logger.error("XAI_API_KEY not set")
+            return []
+        
+        html = await page.content()
+        prompt = """
+        Analyze the provided HTML to identify potential interactive elements (e.g., buttons, links, dynamic lists, endless scroll triggers) that could reveal additional pages when clicked or scrolled. Suggest specific actions (e.g., click selectors, scroll) to uncover more links. Return a JSON list of actions, each with 'type' ('click' or 'scroll') and 'selector' (CSS selector for click or empty for scroll).
+        """
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+        completion = client.chat.completions.create(
+            model="grok-3-latest",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": f"HTML: {html[:2000]}"}
+            ],
+            max_tokens=500
+        )
+        actions = json.loads(completion.choices[0].message.content) if completion.choices[0].message.content else []
+        return actions
+    except Exception as e:
+        logger.error(f"Error analyzing page for links: {e}\n{traceback.format_exc()}")
+        return []
+
 async def generate_embedding(text):
     try:
         process = psutil.Process()
@@ -160,21 +205,6 @@ def query_grok_api(query, context, prompt):
         logger.error(f"Error querying xAI Grok API: {str(e)}\n{traceback.format_exc()}")
         return f"Fallback: Unable to generate AI summary. Please check API key or endpoint."
 
-def normalize_url(url):
-    """Normalize URL by adding https:// if missing and ensuring proper format."""
-    if not url:
-        return None
-    url = url.strip()
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    try:
-        parsed = urllib.parse.urlparse(url)
-        if not parsed.netloc:
-            return None
-        return parsed.geturl()
-    except ValueError:
-        return None
-
 async def crawl_website(start_url, user_id, library_id):
     logger.info(f"Starting crawl for {start_url} by user {user_id} in library {library_id}")
     process = psutil.Process()
@@ -204,6 +234,10 @@ async def crawl_website(start_url, user_id, library_id):
                     if url in visited_urls or not url.startswith(('http://', 'https://')):
                         logger.debug(f"Skipping invalid or visited URL: {url}")
                         continue
+                    # Skip non-textual content
+                    if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg)$', url, re.IGNORECASE):
+                        logger.debug(f"Skipping non-textual URL: {url}")
+                        continue
                     visited_urls.add(url)
                     links_scanned += 1
                     logger.debug(f"Scanning URL: {url}")
@@ -221,29 +255,59 @@ async def crawl_website(start_url, user_id, library_id):
                             await page.close()
                             continue
                         
-                        await page.wait_for_timeout(5000)
+                        # Simulate scrolling
+                        await page.evaluate('''() => {
+                            window.scrollTo(0, document.body.scrollHeight);
+                        }''')
+                        await page.wait_for_timeout(2000)
                         
-                        content = await page.content()
-                        if not content or len(content.strip()) < 100:
-                            logger.warning(f"No valid content found for {url}")
+                        # Analyze page for dynamic links
+                        actions = await analyze_page_for_links(page)
+                        for action in actions:
+                            try:
+                                if action['type'] == 'click' and action['selector']:
+                                    await page.click(action['selector'], timeout=5000)
+                                    await page.wait_for_timeout(2000)
+                                elif action['type'] == 'scroll':
+                                    await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
+                                    await page.wait_for_timeout(2000)
+                            except Exception as e:
+                                logger.debug(f"Error performing action {action}: {e}")
+                        
+                        content_type = response.headers.get('content-type', '').lower()
+                        content = None
+                        if 'text/html' in content_type:
+                            content = await page.content()
+                            cleaned_content = clean_content(content)
+                            if not cleaned_content or len(cleaned_content.strip()) < 100:
+                                logger.warning(f"No valid textual content found for {url}")
+                                await page.close()
+                                continue
+                        elif 'application/pdf' in content_type:
+                            cleaned_content = await extract_pdf_text(url)
+                            if not cleaned_content or len(cleaned_content.strip()) < 100:
+                                logger.warning(f"No valid textual content in PDF at {url}")
+                                await page.close()
+                                continue
+                        else:
+                            logger.debug(f"Skipping unsupported content type {content_type} for {url}")
                             await page.close()
                             continue
                         
-                        embedding = await generate_embedding(content)
+                        embedding = await generate_embedding(cleaned_content)
                         if embedding is None:
                             logger.warning(f"Failed to generate embedding for {url}")
                             await page.close()
                             continue
                         
                         items_crawled += 1
-                        cleaned_content = clean_content(content)
                         crawled_data.append((url, cleaned_content, embedding.tolist(), None, library_id))
                         logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
                         
                         links = await page.evaluate('''() => {
                             const urls = [];
-                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], [href], [src], link[rel="sitemap"]').forEach(el => {
-                                let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link') || el.getAttribute('src');
+                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], link[rel="sitemap"]').forEach(el => {
+                                let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link');
                                 if (!url && el.getAttribute('onclick')) {
                                     const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign|window\.location\.replace)\(['"]([^'"]+)['"]/);
                                     if (match) url = match[1];
@@ -300,7 +364,7 @@ async def crawl_website(start_url, user_id, library_id):
                 await browser.close()
                 conn.close()
         if not crawled_data and links_found == links_scanned:
-            flash("No new links found; all URLs already exist in the database.", 'info')
+            flash("No new textual content found; all URLs already exist or lack meaningful text.", 'info')
         return crawled_data
     except Exception as e:
         logger.error(f"Unexpected error in crawl_website: {str(e)}\n{traceback.format_exc()}")
@@ -604,9 +668,9 @@ async def crawl():
                     conn.close()
                     flash(f"Stored {len(crawled_data)} items in library.", 'success')
                 else:
-                    flash("All pages from that link have already been added to the library.", 'info')
+                    flash("No new textual content found; all URLs already exist or lack meaningful text.", 'info')
                 
-                return redirect(url_for('crawl'))
+                return redirect(url_for('crawl', url=start_url, library_id=library_id))
             except psycopg2.errors.UniqueViolation as e:
                 logger.info(f"Duplicate URL detected: {str(e)}")
                 flash("All pages from that link have already been added to the library.", 'info')
