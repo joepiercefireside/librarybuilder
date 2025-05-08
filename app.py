@@ -560,7 +560,7 @@ def crawl_progress():
         try:
             if not current_user or not hasattr(current_user, 'id'):
                 logger.error("Unauthenticated or invalid user in crawl_progress")
-                yield f"data: {{'status': 'error: User not authenticated'}}}\n\n"
+                yield f"data: {{'status': 'error: User not authenticated'}}\n\n"
                 return
             while True:
                 try:
