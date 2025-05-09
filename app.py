@@ -24,6 +24,7 @@ import pdfplumber
 import aiohttp
 import re
 import io
+from heapq import heappush, heappop
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -63,7 +64,6 @@ async def load_embedding_model():
             logger.info("all-MiniLM-L6-v2 model loaded.")
         except Exception as e:
             logger.error(f"Failed to load model: {str(e)}\n{traceback.format_exc()}")
-            # Fallback to basic HTTP download without hf_xet
             try:
                 os.environ["HF_HUB_DISABLE_XET"] = "1"
                 tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
@@ -182,16 +182,14 @@ async def analyze_page_for_links(page):
         logger.error(f"Error analyzing page for links: {str(e)}\n{traceback.format_exc()}")
         return []
 
-async def generate_embedding(text):
+async def generate_embedding(text, tokenizer, model):
     try:
         process = psutil.Process()
         logger.info(f"Memory usage before embedding: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-        tokenizer, model = await load_embedding_model()
         inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
         with torch.no_grad():
             outputs = model(**inputs)
         embedding = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
-        await unload_embedding_model()
         logger.info(f"Memory usage after embedding: {process.memory_info().rss / 1024 / 1024:.2f} MB")
         return embedding
     except Exception as e:
@@ -240,12 +238,25 @@ async def crawl_website(start_url, user_id, library_id):
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
     
     visited_urls = set()
-    to_visit = [start_url]
+    # Priority queue: (priority, url), lower priority numbers are higher priority
+    to_visit = []
+    def add_to_visit(url, priority):
+        heappush(to_visit, (priority, url))
+    
+    # Prioritize education-related URLs
+    education_keywords = ['/education', '/learning-center', '/resources']
+    def get_url_priority(url):
+        for keyword in education_keywords:
+            if keyword in url.lower():
+                return 0  # High priority
+        return 1  # Default priority
+    
+    add_to_visit(start_url, get_url_priority(start_url))
     base_domain = urllib.parse.urlparse(start_url).netloc
     links_found = 1
     links_scanned = 0
     items_crawled = 0
-    max_items = 50  # Increased to collect more textual content
+    max_items = 50
     crawled_data = []
     
     conn = sqlite3.connect('progress.db')
@@ -254,29 +265,38 @@ async def crawl_website(start_url, user_id, library_id):
               (user_id, start_url, library_id, links_found, links_scanned, items_crawled, "running", start_url))
     conn.commit()
     
+    # Load embedding model once for the entire crawl
+    try:
+        embedding_tokenizer, embedding_model = await load_embedding_model()
+    except Exception as e:
+        logger.error(f"Failed to load embedding model: {str(e)}")
+        c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                  (f"error: {str(e)}", "", user_id, start_url, library_id))
+        conn.commit()
+        conn.close()
+        return crawled_data
+    
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'])
             try:
                 while to_visit and items_crawled < max_items:
-                    url = to_visit.pop(0)
-                    if url in visited_urls or not url.startswith(('http://', 'https://')):
-                        logger.debug(f"Skipping invalid or visited URL: {url}")
-                        continue
-                    # Skip non-textual content by file extension
-                    if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
-                        logger.debug(f"Skipping non-textual URL: {url}")
-                        continue
-                    visited_urls.add(url)
-                    links_scanned += 1
-                    logger.debug(f"Scanning URL: {url}")
-                    
-                    # Update current_url in progress
-                    c.execute("UPDATE progress SET current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                              (url, user_id, start_url, library_id))
-                    conn.commit()
-                    
                     try:
+                        priority, url = heappop(to_visit)
+                        if url in visited_urls or not url.startswith(('http://', 'https://')):
+                            logger.debug(f"Skipping invalid or visited URL: {url}")
+                            continue
+                        if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
+                            logger.debug(f"Skipping non-textual URL: {url}")
+                            continue
+                        visited_urls.add(url)
+                        links_scanned += 1
+                        logger.debug(f"Scanning URL: {url} (priority: {priority})")
+                        
+                        c.execute("UPDATE progress SET current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                                  (url, user_id, start_url, library_id))
+                        conn.commit()
+                        
                         page = await browser.new_page()
                         response = await page.goto(url, timeout=30000, wait_until='networkidle')
                         if response is None or response.status >= 400:
@@ -284,30 +304,27 @@ async def crawl_website(start_url, user_id, library_id):
                             await page.close()
                             continue
                         
-                        # Simulate scrolling to load dynamic content
-                        for _ in range(3):  # Scroll multiple times to trigger infinite scroll
+                        for _ in range(3):
                             await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
                             await page.wait_for_timeout(2000)
                         
-                        # Analyze page for dynamic links
                         actions = await analyze_page_for_links(page)
-                        for action in actions[:5]:  # Limit to top 5 actions to avoid overload
+                        for action in actions[:5]:
                             try:
                                 if action['type'] == 'click' and action['selector']:
                                     elements = await page.query_selector_all(action['selector'])
-                                    for element in elements[:2]:  # Limit clicks per selector
+                                    for element in elements[:2]:
                                         try:
                                             await element.click(timeout=5000)
                                             await page.wait_for_timeout(3000)
-                                            # Check for new content
                                             new_links = await page.evaluate('''() => {
                                                 return Array.from(document.querySelectorAll('a[href]')).map(a => a.href);
                                             }''')
                                             for link in new_links:
                                                 absolute_url = urllib.parse.urljoin(url, link)
                                                 parsed_url = urllib.parse.urlparse(absolute_url)
-                                                if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit and parsed_url.scheme in ('http', 'https'):
-                                                    to_visit.append(absolute_url)
+                                                if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and parsed_url.scheme in ('http', 'https'):
+                                                    add_to_visit(absolute_url, get_url_priority(absolute_url))
                                                     links_found += 1
                                                     logger.debug(f"New link found via click: {absolute_url}, links_found={links_found}")
                                         except Exception as e:
@@ -338,7 +355,7 @@ async def crawl_website(start_url, user_id, library_id):
                             await page.close()
                             continue
                         
-                        embedding = await generate_embedding(cleaned_content)
+                        embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
                         if embedding is None:
                             logger.warning(f"Failed to generate embedding for {url}")
                             await page.close()
@@ -382,8 +399,8 @@ async def crawl_website(start_url, user_id, library_id):
                         for link in links:
                             absolute_url = urllib.parse.urljoin(url, link)
                             parsed_url = urllib.parse.urlparse(absolute_url)
-                            if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in to_visit and parsed_url.scheme in ('http', 'https'):
-                                to_visit.append(absolute_url)
+                            if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and parsed_url.scheme in ('http', 'https'):
+                                add_to_visit(absolute_url, get_url_priority(absolute_url))
                                 links_found += 1
                                 logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
                         
@@ -398,8 +415,7 @@ async def crawl_website(start_url, user_id, library_id):
                         c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                                   (f"error: {str(e)}", user_id, start_url, library_id))
                         conn.commit()
-                        conn.close()
-                        return crawled_data
+                        continue
                 logger.info(f"Crawl complete: items_crawled={items_crawled}")
                 c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                           ("complete", "", user_id, start_url, library_id))
@@ -417,6 +433,8 @@ async def crawl_website(start_url, user_id, library_id):
         conn.commit()
         conn.close()
         return crawled_data
+    finally:
+        await unload_embedding_model()
 
 @app.route('/')
 def index():
@@ -696,7 +714,6 @@ def crawl():
             
             logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
             try:
-                # Run async crawl_website in a sync context
                 crawled_data = asyncio.run(crawl_website(start_url, current_user.id, int(library_id)))
                 
                 if crawled_data:
@@ -795,7 +812,9 @@ def search():
                 return render_template('search.html', libraries=libraries, prompts=prompts)
             
             logger.info(f"Search query: {query} in library {library_id}")
-            query_embedding = asyncio.run(generate_embedding(query))
+            tokenizer, model = asyncio.run(load_embedding_model())
+            query_embedding = asyncio.run(generate_embedding(query, tokenizer, model))
+            asyncio.run(unload_embedding_model())
             if query_embedding is None:
                 flash('Failed to generate query embedding.', 'error')
                 return render_template('search.html', libraries=libraries, prompts=prompts)
