@@ -25,6 +25,8 @@ import aiohttp
 import re
 import io
 from heapq import heappush, heappop
+import threading
+import concurrent.futures
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -238,18 +240,16 @@ async def crawl_website(start_url, user_id, library_id):
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
     
     visited_urls = set()
-    # Priority queue: (priority, url), lower priority numbers are higher priority
     to_visit = []
     def add_to_visit(url, priority):
         heappush(to_visit, (priority, url))
     
-    # Prioritize education-related URLs
     education_keywords = ['/education', '/learning-center', '/resources']
     def get_url_priority(url):
         for keyword in education_keywords:
             if keyword in url.lower():
-                return 0  # High priority
-        return 1  # Default priority
+                return 0
+        return 1
     
     add_to_visit(start_url, get_url_priority(start_url))
     base_domain = urllib.parse.urlparse(start_url).netloc
@@ -265,7 +265,6 @@ async def crawl_website(start_url, user_id, library_id):
               (user_id, start_url, library_id, links_found, links_scanned, items_crawled, "running", start_url))
     conn.commit()
     
-    # Load embedding model once for the entire crawl
     try:
         embedding_tokenizer, embedding_model = await load_embedding_model()
     except Exception as e:
@@ -714,7 +713,17 @@ def crawl():
             
             logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
             try:
-                crawled_data = asyncio.run(crawl_website(start_url, current_user.id, int(library_id)))
+                # Run crawl_website in a thread to avoid event loop conflicts
+                def run_crawl():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(crawl_website(start_url, current_user.id, int(library_id)))
+                    finally:
+                        loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    crawled_data = executor.submit(run_crawl).result()
                 
                 if crawled_data:
                     conn = get_db_connection()
@@ -812,9 +821,20 @@ def search():
                 return render_template('search.html', libraries=libraries, prompts=prompts)
             
             logger.info(f"Search query: {query} in library {library_id}")
-            tokenizer, model = asyncio.run(load_embedding_model())
-            query_embedding = asyncio.run(generate_embedding(query, tokenizer, model))
-            asyncio.run(unload_embedding_model())
+            def run_embedding():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    tokenizer, model = loop.run_until_complete(load_embedding_model())
+                    query_embedding = loop.run_until_complete(generate_embedding(query, tokenizer, model))
+                    loop.run_until_complete(unload_embedding_model())
+                    return query_embedding
+                finally:
+                    loop.close()
+            
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                query_embedding = executor.submit(run_embedding).result()
+            
             if query_embedding is None:
                 flash('Failed to generate query embedding.', 'error')
                 return render_template('search.html', libraries=libraries, prompts=prompts)
@@ -866,15 +886,25 @@ def search():
 def test_playwright():
     try:
         logger.info("Starting Playwright test")
-        async def run_playwright():
-            async with async_playwright() as p:
-                browser = await p.chromium.launch()
-                page = await browser.new_page()
-                await page.goto('https://example.com')
-                content = await page.content()
-                await browser.close()
-                return content
-        content = asyncio.run(run_playwright())
+        def run_playwright():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async def inner():
+                    async with async_playwright() as p:
+                        browser = await p.chromium.launch()
+                        page = await browser.new_page()
+                        await page.goto('https://example.com')
+                        content = await page.content()
+                        await browser.close()
+                        return content
+                return loop.run_until_complete(inner())
+            finally:
+                loop.close()
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            content = executor.submit(run_playwright).result()
+        
         logger.info("Playwright test completed successfully")
         return f"Playwright test successful: {len(content)} bytes"
     except Exception as e:
