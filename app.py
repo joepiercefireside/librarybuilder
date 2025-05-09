@@ -152,7 +152,11 @@ async def analyze_page_for_links(page):
         
         html = await page.content()
         prompt = """
-        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dynamic lists, endless scroll triggers, images with onclick events) that could lead to pages with textual content when clicked or scrolled. Prioritize buttons with labels like 'Browse', 'Learn More', 'Resources', or links within dynamic lists. Suggest specific actions (e.g., click selectors, scroll) to uncover more links, including multi-step paths (e.g., click a button to load a page, then click image links). Return a JSON list of actions, each with 'type' ('click' or 'scroll'), 'selector' (CSS selector for click or empty for scroll), and 'priority' (1 for high, 2 for medium, 3 for low).
+        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dynamic lists, endless scroll triggers, images with onclick events) that could lead to pages with textual content when clicked or scrolled. Prioritize buttons with labels like 'Browse', 'Learn More', 'Resources', or links within dynamic lists. Suggest specific actions (e.g., click selectors, scroll) to uncover more links, including multi-step paths (e.g., click a button to load a page, then click image links). Return a JSON list of actions, each with 'type' ('click' or 'scroll'), 'selector' (CSS selector for click or empty for scroll), and 'priority' (1 for high, 2 for medium, 3 for low). Ensure the response is valid JSON.
+        Example response: [
+            {"type": "click", "selector": "button.browse", "priority": 1},
+            {"type": "scroll", "selector": "", "priority": 2}
+        ]
         """
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         completion = client.chat.completions.create(
@@ -163,14 +167,19 @@ async def analyze_page_for_links(page):
             ],
             max_tokens=1000
         )
+        raw_response = completion.choices[0].message.content
+        logger.debug(f"Grok API raw response: {raw_response}")
         try:
-            actions = json.loads(completion.choices[0].message.content)
+            actions = json.loads(raw_response)
+            if not isinstance(actions, list):
+                logger.error("Grok API response is not a list")
+                return []
             return sorted(actions, key=lambda x: x.get('priority', 3))
         except json.JSONDecodeError:
-            logger.error("Failed to parse Grok API response as JSON")
+            logger.error(f"Failed to parse Grok API response as JSON: {raw_response}")
             return []
     except Exception as e:
-        logger.error(f"Error analyzing page for links: {e}\n{traceback.format_exc()}")
+        logger.error(f"Error analyzing page for links: {str(e)}\n{traceback.format_exc()}")
         return []
 
 async def generate_embedding(text):
@@ -344,7 +353,7 @@ async def crawl_website(start_url, user_id, library_id):
                             document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], link[rel="sitemap"]').forEach(el => {
                                 let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link');
                                 if (!url && el.getAttribute('onclick')) {
-                                    const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign| dégagez-vouslocation\.replace)\(['"]([^'"]+)['"]/);
+                                    const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign|window\.location\.replace)\(['"]([^'"]+)['"]/);
                                     if (match) url = match[1];
                                 }
                                 if (!url && el.tagName === 'META' && el.getAttribute('http-equiv') === 'refresh') {
@@ -410,7 +419,7 @@ async def crawl_website(start_url, user_id, library_id):
         return crawled_data
 
 @app.route('/')
-async def index():
+def index():
     try:
         logger.info("Accessing index page")
         return render_template('index.html')
@@ -419,7 +428,7 @@ async def index():
         return "Internal Server Error", 500
 
 @app.route('/register', methods=['GET', 'POST'])
-async def register():
+def register():
     try:
         if request.method == 'POST':
             email = request.form.get('email')
@@ -443,7 +452,7 @@ async def register():
         return "Internal Server Error", 500
 
 @app.route('/login', methods=['GET', 'POST'])
-async def login():
+def login():
     try:
         if request.method == 'POST':
             email = request.form.get('email')
@@ -467,7 +476,7 @@ async def login():
 
 @app.route('/logout')
 @login_required
-async def logout():
+def logout():
     try:
         logout_user()
         logger.info("User logged out")
@@ -478,7 +487,7 @@ async def logout():
 
 @app.route('/libraries', methods=['GET', 'POST'])
 @login_required
-async def libraries():
+def libraries():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -504,7 +513,7 @@ async def libraries():
 
 @app.route('/libraries/view/<int:library_id>')
 @login_required
-async def view_library(library_id):
+def view_library(library_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -526,7 +535,7 @@ async def view_library(library_id):
 
 @app.route('/libraries/delete_content/<int:content_id>')
 @login_required
-async def delete_library_content(content_id):
+def delete_library_content(content_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -549,7 +558,7 @@ async def delete_library_content(content_id):
 
 @app.route('/libraries/delete/<int:library_id>')
 @login_required
-async def delete_library(library_id):
+def delete_library(library_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -572,7 +581,7 @@ async def delete_library(library_id):
 
 @app.route('/add_library', methods=['POST'])
 @login_required
-async def add_library():
+def add_library():
     try:
         name = request.form.get('name')
         if not name:
@@ -593,7 +602,7 @@ async def add_library():
 
 @app.route('/prompts', methods=['GET', 'POST'])
 @login_required
-async def prompts():
+def prompts():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -620,7 +629,7 @@ async def prompts():
 
 @app.route('/prompts/edit/<int:prompt_id>', methods=['GET', 'POST'])
 @login_required
-async def edit_prompt(prompt_id):
+def edit_prompt(prompt_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -652,7 +661,7 @@ async def edit_prompt(prompt_id):
 
 @app.route('/prompts/delete/<int:prompt_id>')
 @login_required
-async def delete_prompt(prompt_id):
+def delete_prompt(prompt_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -669,7 +678,7 @@ async def delete_prompt(prompt_id):
 
 @app.route('/crawl', methods=['GET', 'POST'])
 @login_required
-async def crawl():
+def crawl():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -687,7 +696,8 @@ async def crawl():
             
             logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
             try:
-                crawled_data = await crawl_website(start_url, current_user.id, int(library_id))
+                # Run async crawl_website in a sync context
+                crawled_data = asyncio.run(crawl_website(start_url, current_user.id, int(library_id)))
                 
                 if crawled_data:
                     conn = get_db_connection()
@@ -710,11 +720,15 @@ async def crawl():
                 logger.info(f"Duplicate URL detected: {str(e)}")
                 flash("All pages from that link have already been added to the library.", 'info')
                 return redirect(url_for('crawl'))
+            except Exception as e:
+                logger.error(f"Error during crawl: {str(e)}\n{traceback.format_exc()}")
+                flash(f"Error during crawl: {str(e)}", 'error')
+                return render_template('crawl.html', libraries=libraries)
         
         return render_template('crawl.html', libraries=libraries)
     except Exception as e:
         logger.error(f"Error in crawl endpoint: {e}\n{traceback.format_exc()}")
-        flash(f"Error during crawl: {str(e)}", 'error')
+        flash(f"Error: {str(e)}", 'error')
         return render_template('crawl.html', libraries=[])
 
 @app.route('/crawl_progress', methods=['GET'])
@@ -761,7 +775,7 @@ def current_url():
 
 @app.route('/search', methods=['GET', 'POST'])
 @login_required
-async def search():
+def search():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -781,7 +795,7 @@ async def search():
                 return render_template('search.html', libraries=libraries, prompts=prompts)
             
             logger.info(f"Search query: {query} in library {library_id}")
-            query_embedding = await generate_embedding(query)
+            query_embedding = asyncio.run(generate_embedding(query))
             if query_embedding is None:
                 flash('Failed to generate query embedding.', 'error')
                 return render_template('search.html', libraries=libraries, prompts=prompts)
@@ -830,23 +844,26 @@ async def search():
         return "Internal Server Error", 500
 
 @app.route('/test_playwright')
-async def test_playwright():
+def test_playwright():
     try:
         logger.info("Starting Playwright test")
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await browser.new_page()
-            await page.goto('https://example.com')
-            content = await page.content()
-            await browser.close()
-            logger.info("Playwright test completed successfully")
-            return f"Playwright test successful: {len(content)} bytes"
+        async def run_playwright():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page()
+                await page.goto('https://example.com')
+                content = await page.content()
+                await browser.close()
+                return content
+        content = asyncio.run(run_playwright())
+        logger.info("Playwright test completed successfully")
+        return f"Playwright test successful: {len(content)} bytes"
     except Exception as e:
         logger.error(f"Playwright test failed: {str(e)}\n{traceback.format_exc()}")
         return f"Playwright test failed: {str(e)}"
 
 @app.route('/health')
-async def health():
+def health():
     return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
