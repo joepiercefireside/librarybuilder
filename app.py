@@ -154,10 +154,11 @@ async def analyze_page_for_links(page):
         
         html = await page.content()
         prompt = """
-        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dynamic lists, endless scroll triggers, images with onclick events) that could lead to pages with textual content when clicked or scrolled. Prioritize buttons with labels like 'Browse', 'Learn More', 'Resources', or links within dynamic lists. Suggest specific actions (e.g., click selectors, scroll) to uncover more links, including multi-step paths (e.g., click a button to load a page, then click image links). Return a JSON list of actions, each with 'type' ('click' or 'scroll'), 'selector' (CSS selector for click or empty for scroll), and 'priority' (1 for high, 2 for medium, 3 for low). Ensure the response is valid JSON.
+        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dropdowns, tabs, search inputs, filters, expandable sections) that could lead to pages with textual content when clicked, scrolled, or interacted with. Prioritize elements like search buttons, filter dropdowns, tabs, 'Load More' buttons, or links within lists. Suggest specific actions (e.g., click selectors, scroll, fill input) to uncover more links, including multi-step paths (e.g., select a filter, then click a result). Return a JSON list of actions, each with 'type' ('click', 'scroll', 'fill'), 'selector' (CSS selector for click/fill or empty for scroll), 'value' (input value for fill, empty otherwise), and 'priority' (1 for high, 2 for medium, 3 for low). Ensure the response is valid JSON.
         Example response: [
-            {"type": "click", "selector": "button.browse", "priority": 1},
-            {"type": "scroll", "selector": "", "priority": 2}
+            {"type": "click", "selector": "button.search", "value": "", "priority": 1},
+            {"type": "fill", "selector": "input#search", "value": "privacy", "priority": 1},
+            {"type": "scroll", "selector": "", "value": "", "priority": 2}
         ]
         """
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
@@ -167,7 +168,7 @@ async def analyze_page_for_links(page):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": f"HTML: {html[:4000]}"}
             ],
-            max_tokens=1000
+            max_tokens=1500
         )
         raw_response = completion.choices[0].message.content
         logger.debug(f"Grok API raw response: {raw_response}")
@@ -240,8 +241,7 @@ async def crawl_website(start_url, user_id, library_id):
     logger.info(f"Starting crawl for {start_url} by user {user_id} in library {library_id}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-    cpu_percent = psutil.cpu_percent()
-    logger.info(f"CPU usage before crawl: {cpu_percent}%")
+    logger.info(f"CPU usage before crawl: {psutil.cpu_percent()}%")
     
     visited_urls = set()
     to_visit = []
@@ -272,7 +272,7 @@ async def crawl_website(start_url, user_id, library_id):
     try:
         embedding_tokenizer, embedding_model = await load_embedding_model()
     except Exception as e:
-        logger.error(f"Failed to load embedding model: {str(e)}\n{traceback.format_exc()}")
+        logger.error(f"Failed to load embedding model: {str(e)}")
         c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                   (f"error: {str(e)}", "", str(user_id), start_url, library_id))
         conn.commit()
@@ -317,7 +317,7 @@ async def crawl_website(start_url, user_id, library_id):
                         page = await browser.new_page()
                         try:
                             logger.info(f"Navigating to {url}")
-                            response = await page.goto(url, timeout=30000, wait_until='networkidle')
+                            response = await page.goto(url, timeout=60000, wait_until='networkidle')
                             logger.info(f"Memory usage after navigation to {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                             logger.info(f"CPU usage after navigation: {psutil.cpu_percent()}%")
                         except PlaywrightTimeoutError as e:
@@ -334,16 +334,50 @@ async def crawl_website(start_url, user_id, library_id):
                             await page.close()
                             continue
                         
-                        for _ in range(3):
+                        # Increased scrolling to load dynamic content
+                        for _ in range(5):
                             await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
-                            await page.wait_for_timeout(2000)
+                            await page.wait_for_timeout(3000)
                         
+                        # Simulate directory interactions
+                        try:
+                            # Search bar interaction
+                            search_inputs = await page.query_selector_all('input[type="search"], input#search, input[name*="search"]')
+                            if search_inputs:
+                                await search_inputs[0].fill("privacy")
+                                await page.wait_for_timeout(2000)
+                                await page.keyboard.press("Enter")
+                                await page.wait_for_timeout(3000)
+                                logger.debug("Performed search interaction")
+                            
+                            # Filter or tab clicks
+                            filter_selectors = ['.filter', '.tab', '[role="tab"]', '[role="button"]', 'button', 'select']
+                            for selector in filter_selectors:
+                                elements = await page.query_selector_all(selector)
+                                for element in elements[:3]:  # Limit to 3 per selector
+                                    try:
+                                        await element.click(timeout=5000)
+                                        await page.wait_for_timeout(3000)
+                                        logger.debug(f"Clicked element with selector: {selector}")
+                                    except Exception as e:
+                                        logger.debug(f"Error clicking {selector}: {e}")
+                        except Exception as e:
+                            logger.error(f"Error during directory interactions: {str(e)}")
+                        
+                        # Grok API analysis
                         actions = await analyze_page_for_links(page)
-                        for action in actions[:5]:
+                        if not actions:
+                            logger.warning("Grok API returned no actions, using fallback selectors")
+                            actions = [
+                                {"type": "click", "selector": ".filter, .tab, [role='tab'], [role='button'], button, a[href*='resource']", "value": "", "priority": 1},
+                                {"type": "scroll", "selector": "", "value": "", "priority": 2}
+                            ]
+                        
+                        for action in actions[:10]:  # Increased to 10 actions
                             try:
                                 if action['type'] == 'click' and action['selector']:
                                     elements = await page.query_selector_all(action['selector'])
-                                    for element in elements[:2]:
+                                    for element in elements[:3]:
                                         try:
                                             await element.click(timeout=5000)
                                             await page.wait_for_timeout(3000)
@@ -361,7 +395,13 @@ async def crawl_website(start_url, user_id, library_id):
                                             logger.debug(f"Error clicking element {action['selector']}: {e}")
                                 elif action['type'] == 'scroll':
                                     await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
+                                    await page.wait_for_timeout(3000)
+                                elif action['type'] == 'fill' and action['selector'] and action['value']:
+                                    await page.fill(action['selector'], action['value'])
                                     await page.wait_for_timeout(2000)
+                                    await page.keyboard.press("Enter")
+                                    await page.wait_for_timeout(3000)
+                                    logger.debug(f"Filled input {action['selector']} with value: {action['value']}")
                             except Exception as e:
                                 logger.debug(f"Error performing action {action}: {e}")
                         
@@ -395,10 +435,11 @@ async def crawl_website(start_url, user_id, library_id):
                         crawled_data.append((url, cleaned_content, embedding.tolist(), None, library_id))
                         logger.debug(f"Content found for {url}, items_crawled={items_crawled}")
                         
+                        # Enhanced link extraction
                         links = await page.evaluate('''() => {
                             const urls = [];
-                            document.querySelectorAll('a[href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], meta[content][http-equiv="refresh"], link[rel="sitemap"]').forEach(el => {
-                                let url = el.href || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link');
+                            document.querySelectorAll('a[href], [href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], [ng-href], [data-ng-href], [data-action], [data-target], meta[content][http-equiv="refresh"], link[rel="sitemap"]').forEach(el => {
+                                let url = el.href || el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link') || el.getAttribute('ng-href') || el.getAttribute('data-ng-href') || el.getAttribute('data-action') || el.getAttribute('data-target');
                                 if (!url && el.getAttribute('onclick')) {
                                     const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign|window\.location\.replace)\(['"]([^'"]+)['"]/);
                                     if (match) url = match[1];
@@ -426,6 +467,7 @@ async def crawl_website(start_url, user_id, library_id):
                             });
                             return [...new Set(urls)];
                         }''')
+                        logger.debug(f"Found {len(links)} links on {url}: {links}")
                         for link in links:
                             absolute_url = urllib.parse.urljoin(url, link)
                             parsed_url = urllib.parse.urlparse(absolute_url)
