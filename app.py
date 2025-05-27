@@ -154,9 +154,9 @@ async def analyze_page_for_links(page):
         
         html = await page.content()
         prompt = """
-        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dropdowns, tabs, search inputs, accordion toggles, collapsible panels) that could reveal additional links or content when clicked, scrolled, or interacted with. Prioritize elements that toggle expandable sections (e.g., accordion headers, collapsible panels with classes like 'accordion', 'toggle', or attributes like 'aria-expanded', 'data-toggle') or trigger dynamic content loading (e.g., 'Load More', search buttons, filter dropdowns). Suggest specific actions (e.g., click selectors, scroll, fill input) to uncover more links, including multi-step paths (e.g., click an accordion header to expand a section, then extract links). Return a JSON list of actions, each with 'type' ('click', 'scroll', 'fill'), 'selector' (CSS selector for click/fill or empty for scroll), 'value' (input value for fill, empty otherwise), and 'priority' (1 for high, 2 for medium, 3 for low). Ensure the response is valid JSON.
+        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dropdowns, tabs, search inputs, accordion toggles, collapsible panels) that could reveal additional links or content when clicked, scrolled, or interacted with. Prioritize elements that toggle expandable sections (e.g., accordion headers, collapsible panels with classes like 'accordion', 'toggle', 'directory-item', 'collapse', or attributes like 'aria-expanded', 'data-toggle', 'data-collapse') or trigger dynamic content loading (e.g., 'Load More', search buttons, filter dropdowns). Suggest specific actions (e.g., click selectors, scroll, fill input) to uncover more links, including multi-step paths (e.g., click an accordion header to expand a section, then extract links). Return a JSON list of actions, each with 'type' ('click', 'scroll', 'fill'), 'selector' (CSS selector for click/fill or empty for scroll), 'value' (input value for fill, empty otherwise), and 'priority' (1 for high, 2 for medium, 3 for low). Ensure the response is valid JSON.
         Example response: [
-            {"type": "click", "selector": "[aria-expanded='false'], .accordion-toggle, .collapsible", "value": "", "priority": 1},
+            {"type": "click", "selector": "[aria-expanded='false'], .accordion-toggle, .directory-item", "value": "", "priority": 1},
             {"type": "fill", "selector": "input#search", "value": "query", "priority": 1},
             {"type": "scroll", "selector": "", "value": "", "priority": 2}
         ]
@@ -166,7 +166,7 @@ async def analyze_page_for_links(page):
             model="grok-3-latest",
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": f"HTML: {html[:8000]}"}
+                {"role": "user", "content": f"HTML: {html[:10000]}"}
             ],
             max_tokens=2000
         )
@@ -306,6 +306,9 @@ async def crawl_website(start_url, user_id, library_id):
                         if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
                             logger.debug(f"Skipping non-textual URL: {url}")
                             continue
+                        if 'modal' in url.lower():
+                            logger.debug(f"Skipping modal URL: {url}")
+                            continue
                         visited_urls.add(url)
                         links_scanned += 1
                         logger.debug(f"Scanning URL: {url} (priority: {priority})")
@@ -334,6 +337,21 @@ async def crawl_website(start_url, user_id, library_id):
                             await page.close()
                             continue
                         
+                        # Close any modals
+                        try:
+                            modal_close_selectors = ['.modal-close', '.close', '[aria-label="close"]', 'button.close']
+                            for selector in modal_close_selectors:
+                                close_buttons = await page.query_selector_all(selector)
+                                for button in close_buttons:
+                                    try:
+                                        await button.click(timeout=5000)
+                                        await page.wait_for_timeout(2000)
+                                        logger.debug(f"Closed modal with selector: {selector}")
+                                    except Exception as e:
+                                        logger.debug(f"Error closing modal {selector}: {e}")
+                        except Exception as e:
+                            logger.error(f"Error closing modals: {str(e)}")
+                        
                         # Scroll to load lazy content
                         for _ in range(5):
                             await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
@@ -344,65 +362,85 @@ async def crawl_website(start_url, user_id, library_id):
                             accordion_selectors = [
                                 '[aria-expanded="false"]',
                                 '.accordion, .accordion-toggle, .accordion-header',
-                                '.expand, .toggle, .collapsible',
+                                '.expand, .toggle, .collapsible, .collapse',
                                 '[data-toggle], [data-expand], [data-collapse]',
                                 '[role="button"], [aria-controls]',
+                                '.directory-item, .collapse-header, .panel-heading',
                                 'a, button, div, h2, h3, h4, li',  # Broad selector
                             ]
                             click_count = 0
-                            max_clicks = 500  # Prevent infinite loops
+                            max_clicks = 500
                             for selector in accordion_selectors:
                                 if click_count >= max_clicks:
                                     logger.warning(f"Reached max click limit ({max_clicks})")
                                     break
                                 elements = await page.query_selector_all(selector)
+                                logger.debug(f"Found {len(elements)} elements for selector: {selector}")
                                 for element in elements:
                                     if click_count >= max_clicks:
                                         break
                                     try:
-                                        # Check if element is a toggle (not already expanded)
+                                        # Check visibility
+                                        is_visible = await element.is_visible()
+                                        if not is_visible:
+                                            logger.debug(f"Skipping invisible element for selector: {selector}")
+                                            continue
+                                        # Check if element is a toggle
                                         aria_expanded = await element.get_attribute('aria-expanded')
-                                        if aria_expanded == 'false' or aria_expanded is None:  # Click if collapsed or unknown
-                                            await element.click(timeout=5000)
-                                            await page.wait_for_timeout(4000)  # Wait for DOM update
-                                            click_count += 1
-                                            logger.debug(f"Clicked collapsible element #{click_count} with selector: {selector}")
+                                        if aria_expanded == 'false' or aria_expanded is None:
+                                            for _ in range(2):  # Retry once
+                                                try:
+                                                    await element.click(timeout=5000)
+                                                    await page.wait_for_timeout(4000)
+                                                    click_count += 1
+                                                    logger.debug(f"Clicked collapsible element #{click_count} with selector: {selector}")
+                                                    break
+                                                except Exception as e:
+                                                    logger.debug(f"Retry clicking element {selector}: {e}")
+                                                    await page.wait_for_timeout(1000)
                                     except Exception as e:
-                                        logger.debug(f"Error clicking collapsible element {selector}: {e}")
+                                        logger.debug(f"Error processing element {selector}: {e}")
                         except Exception as e:
-                            logger.error(f"Error during collapsible section expansion: {str(e)}")
+                            logger.error(f"Error during collapsible section expansion: {str(e)}\n{traceback.format_exc()}")
                         
                         # Simulate directory interactions (fallback)
                         try:
                             # Search bar interaction
                             search_inputs = await page.query_selector_all('input[type="search"], input#search, input[name*="search"]')
                             if search_inputs:
-                                await search_inputs[0].fill("query")
-                                await page.wait_for_timeout(2000)
-                                await page.keyboard.press("Enter")
-                                await page.wait_for_timeout(3000)
-                                logger.debug("Performed search interaction")
-                            
+                                for input_field in search_inputs[:1]:
+                                    is_visible = await input_field.is_visible()
+                                    if is_visible:
+                                        await input_field.fill("query")
+                                        await page.wait_for_timeout(2000)
+                                        await page.keyboard.press("Enter")
+                                        await page.wait_for_timeout(3000)
+                                        logger.debug("Performed search interaction")
+                                    else:
+                                        logger.debug("Skipping invisible search input")
+                        
                             # Filter or tab clicks
                             filter_selectors = ['.filter', '.tab', '[role="tab"]', '[role="button"]', 'button', 'select']
                             for selector in filter_selectors:
                                 elements = await page.query_selector_all(selector)
                                 for element in elements[:3]:
                                     try:
-                                        await element.click(timeout=5000)
-                                        await page.wait_for_timeout(3000)
-                                        logger.debug(f"Clicked element with selector: {selector}")
+                                        is_visible = await element.is_visible()
+                                        if is_visible:
+                                            await element.click(timeout=5000)
+                                            await page.wait_for_timeout(3000)
+                                            logger.debug(f"Clicked element with selector: {selector}")
                                     except Exception as e:
                                         logger.debug(f"Error clicking {selector}: {e}")
                         except Exception as e:
-                            logger.error(f"Error during directory interactions: {str(e)}")
+                            logger.error(f"Error during directory interactions: {str(e)}\n{traceback.format_exc()}")
                         
                         # Grok API analysis
                         actions = await analyze_page_for_links(page)
                         if not actions:
                             logger.warning("Grok API returned no actions, using fallback selectors")
                             actions = [
-                                {"type": "click", "selector": "[aria-expanded='false'], .accordion-toggle, .collapsible, [data-toggle], a[href*='resource']", "value": "", "priority": 1},
+                                {"type": "click", "selector": "[aria-expanded='false'], .accordion-toggle, .collapsible, [data-toggle], .directory-item, a[href*='resource']", "value": "", "priority": 1},
                                 {"type": "scroll", "selector": "", "value": "", "priority": 2}
                             ]
                         
@@ -412,31 +450,38 @@ async def crawl_website(start_url, user_id, library_id):
                                     elements = await page.query_selector_all(action['selector'])
                                     for element in elements[:3]:
                                         try:
-                                            await element.click(timeout=5000)
-                                            await page.wait_for_timeout(3000)
-                                            new_links = await page.evaluate('''() => {
-                                                return Array.from(document.querySelectorAll('a[href]')).map(a => a.href);
-                                            }''')
-                                            for link in new_links:
-                                                absolute_url = urllib.parse.urljoin(url, link)
-                                                parsed_url = urllib.parse.urlparse(absolute_url)
-                                                if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and parsed_url.scheme in ('http', 'https'):
-                                                    add_to_visit(absolute_url, get_url_priority(absolute_url))
-                                                    links_found += 1
-                                                    logger.debug(f"New link found via click: {absolute_url}, links_found={links_found}")
+                                            is_visible = await element.is_visible()
+                                            if is_visible:
+                                                await element.click(timeout=5000)
+                                                await page.wait_for_timeout(3000)
+                                                new_links = await page.evaluate('''() => {
+                                                    return Array.from(document.querySelectorAll('a[href]')).map(a => a.href);
+                                                }''')
+                                                for link in new_links:
+                                                    absolute_url = urllib.parse.urljoin(url, link)
+                                                    parsed_url = urllib.parse.urlparse(absolute_url)
+                                                    if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and parsed_url.scheme in ('http', 'https'):
+                                                        add_to_visit(absolute_url, get_url_priority(absolute_url))
+                                                        links_found += 1
+                                                        logger.debug(f"New link found via click: {absolute_url}, links_found={links_found}")
                                         except Exception as e:
                                             logger.debug(f"Error clicking element {action['selector']}: {e}")
                                 elif action['type'] == 'scroll':
                                     await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
                                     await page.wait_for_timeout(3000)
                                 elif action['type'] == 'fill' and action['selector'] and action['value']:
-                                    await page.fill(action['selector'], action['value'])
-                                    await page.wait_for_timeout(2000)
-                                    await page.keyboard.press("Enter")
-                                    await page.wait_for_timeout(3000)
-                                    logger.debug(f"Filled input {action['selector']} with value: {action['value']}")
+                                    input_field = await page.query_selector(action['selector'])
+                                    if input_field and await input_field.is_visible():
+                                        await page.fill(action['selector'], action['value'])
+                                        await page.wait_for_timeout(2000)
+                                        await page.keyboard.press("Enter")
+                                        await page.wait_for_timeout(3000)
+                                        logger.debug(f"Filled input {action['selector']} with value: {action['value']}")
                             except Exception as e:
                                 logger.debug(f"Error performing action {action}: {e}")
+                        
+                        # Final wait for dynamic content
+                        await page.wait_for_timeout(5000)
                         
                         content_type = response.headers.get('content-type', '').lower()
                         cleaned_content = None
