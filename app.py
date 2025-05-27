@@ -30,7 +30,7 @@ import concurrent.futures
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600
+app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
@@ -230,6 +230,9 @@ def normalize_url(url):
         parsed = urllib.parse.urlparse(url)
         if not parsed.netloc:
             return None
+        # Ensure www. prefix for consistency
+        if not parsed.netloc.startswith('www.'):
+            parsed = parsed._replace(netloc='www.' + parsed.netloc)
         return parsed.geturl()
     except ValueError:
         return None
@@ -262,7 +265,7 @@ async def crawl_website(start_url, user_id, library_id):
     conn = sqlite3.connect('progress.db')
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO progress (user_id, url, library_id, links_found, links_scanned, items_crawled, status, current_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-              (user_id, start_url, library_id, links_found, links_scanned, items_crawled, "running", start_url))
+              (str(user_id), start_url, library_id, links_found, links_scanned, items_crawled, "running", start_url))
     conn.commit()
     
     try:
@@ -270,7 +273,7 @@ async def crawl_website(start_url, user_id, library_id):
     except Exception as e:
         logger.error(f"Failed to load embedding model: {str(e)}")
         c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                  (f"error: {str(e)}", "", user_id, start_url, library_id))
+                  (f"error: {str(e)}", "", str(user_id), start_url, library_id))
         conn.commit()
         conn.close()
         return crawled_data
@@ -293,7 +296,7 @@ async def crawl_website(start_url, user_id, library_id):
                         logger.debug(f"Scanning URL: {url} (priority: {priority})")
                         
                         c.execute("UPDATE progress SET current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                                  (url, user_id, start_url, library_id))
+                                  (url, str(user_id), start_url, library_id))
                         conn.commit()
                         
                         page = await browser.new_page()
@@ -404,7 +407,7 @@ async def crawl_website(start_url, user_id, library_id):
                                 logger.debug(f"New link found: {absolute_url}, links_found={links_found}")
                         
                         c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                                  (links_found, links_scanned, items_crawled, "running", user_id, start_url, library_id))
+                                  (links_found, links_scanned, items_crawled, "running", str(user_id), start_url, library_id))
                         conn.commit()
                         
                         await page.close()
@@ -412,12 +415,12 @@ async def crawl_website(start_url, user_id, library_id):
                     except Exception as e:
                         logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
                         c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                                  (f"error: {str(e)}", user_id, start_url, library_id))
+                                  (f"error: {str(e)}", str(user_id), start_url, library_id))
                         conn.commit()
                         continue
                 logger.info(f"Crawl complete: items_crawled={items_crawled}")
                 c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                          ("complete", "", user_id, start_url, library_id))
+                          ("complete", "", str(user_id), start_url, library_id))
                 conn.commit()
             finally:
                 await browser.close()
@@ -428,7 +431,7 @@ async def crawl_website(start_url, user_id, library_id):
     except Exception as e:
         logger.error(f"Unexpected error in crawl_website: {str(e)}\n{traceback.format_exc()}")
         c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                  (f"error: {str(e)}", "", user_id, start_url, library_id))
+                  (f"error: {str(e)}", "", str(user_id), start_url, library_id))
         conn.commit()
         conn.close()
         return crawled_data
@@ -506,6 +509,11 @@ def logout():
 @login_required
 def libraries():
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing libraries endpoint")
+            flash('Please log in to access libraries.', 'error')
+            return redirect(url_for('login'))
+        
         conn = get_db_connection()
         cur = conn.cursor()
         if request.method == 'POST':
@@ -532,6 +540,11 @@ def libraries():
 @login_required
 def view_library(library_id):
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing view_library endpoint")
+            flash('Please log in to view libraries.', 'error')
+            return redirect(url_for('login'))
+        
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT id, name FROM libraries WHERE id = %s AND user_id = %s", (library_id, int(current_user.id)))
@@ -554,6 +567,11 @@ def view_library(library_id):
 @login_required
 def delete_library_content(content_id):
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing delete_library_content endpoint")
+            flash('Please log in to delete content.', 'error')
+            return redirect(url_for('login'))
+        
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT library_id FROM documents WHERE id = %s", (content_id,))
@@ -577,6 +595,11 @@ def delete_library_content(content_id):
 @login_required
 def delete_library(library_id):
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing delete_library endpoint")
+            flash('Please log in to delete libraries.', 'error')
+            return redirect(url_for('login'))
+        
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT id FROM libraries WHERE id = %s AND user_id = %s", (library_id, int(current_user.id)))
@@ -600,6 +623,10 @@ def delete_library(library_id):
 @login_required
 def add_library():
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing add_library endpoint")
+            return jsonify({'status': 'error', 'message': 'Please log in to add a library'}), 401
+        
         name = request.form.get('name')
         if not name:
             flash('Library name cannot be empty.', 'error')
@@ -621,6 +648,11 @@ def add_library():
 @login_required
 def prompts():
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing prompts endpoint")
+            flash('Please log in to access prompts.', 'error')
+            return redirect(url_for('login'))
+        
         conn = get_db_connection()
         cur = conn.cursor()
         if request.method == 'POST':
@@ -648,6 +680,11 @@ def prompts():
 @login_required
 def edit_prompt(prompt_id):
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing edit_prompt endpoint")
+            flash('Please log in to edit prompts.', 'error')
+            return redirect(url_for('login'))
+        
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT id, name, content FROM prompts WHERE id = %s AND user_id = %s", (prompt_id, int(current_user.id)))
@@ -680,6 +717,11 @@ def edit_prompt(prompt_id):
 @login_required
 def delete_prompt(prompt_id):
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing delete_prompt endpoint")
+            flash('Please log in to delete prompts.', 'error')
+            return redirect(url_for('login'))
+        
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("DELETE FROM prompts WHERE id = %s AND user_id = %s", (prompt_id, int(current_user.id)))
@@ -697,6 +739,13 @@ def delete_prompt(prompt_id):
 @login_required
 def crawl():
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing crawl endpoint")
+            flash('Please log in to start a crawl.', 'error')
+            return redirect(url_for('login'))
+        
+        logger.debug(f"User authenticated: ID {current_user.id}, email {current_user.email}")
+        
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (int(current_user.id),))
@@ -714,16 +763,16 @@ def crawl():
             logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
             try:
                 # Run crawl_website in a thread to avoid event loop conflicts
-                def run_crawl():
+                def run_crawl(user_id, start_url, library_id):
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
-                        return loop.run_until_complete(crawl_website(start_url, current_user.id, int(library_id)))
+                        return loop.run_until_complete(crawl_website(start_url, user_id, int(library_id)))
                     finally:
                         loop.close()
                 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    crawled_data = executor.submit(run_crawl).result()
+                    crawled_data = executor.submit(run_crawl, current_user.id, start_url, library_id).result()
                 
                 if crawled_data:
                     conn = get_db_connection()
@@ -761,13 +810,13 @@ def crawl():
 @login_required
 def crawl_progress():
     try:
-        if not current_user or not current_user.is_authenticated:
-            logger.error("Unauthenticated user in crawl_progress: current_user=%s" % current_user)
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user in crawl_progress endpoint")
             return jsonify({"status": "error", "message": "User not authenticated"}), 401
         conn = sqlite3.connect('progress.db')
         c = conn.cursor()
         c.execute("SELECT links_found, links_scanned, items_crawled, status FROM progress WHERE user_id = ? AND url = ? AND library_id = ? ORDER BY rowid DESC LIMIT 1",
-                  (current_user.id, request.args.get('url'), request.args.get('library_id')))
+                  (str(current_user.id), request.args.get('url'), request.args.get('library_id')))
         result = c.fetchone()
         conn.close()
         data = {
@@ -785,13 +834,13 @@ def crawl_progress():
 @login_required
 def current_url():
     try:
-        if not current_user or not current_user.is_authenticated:
-            logger.error("Unauthenticated user in current_url: current_user=%s" % current_user)
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user in current_url endpoint")
             return jsonify({"status": "error", "message": "User not authenticated"}), 401
         conn = sqlite3.connect('progress.db')
         c = conn.cursor()
         c.execute("SELECT current_url FROM progress WHERE user_id = ? AND url = ? AND library_id = ? ORDER BY rowid DESC LIMIT 1",
-                  (current_user.id, request.args.get('url'), request.args.get('library_id')))
+                  (str(current_user.id), request.args.get('url'), request.args.get('library_id')))
         result = c.fetchone()
         conn.close()
         return jsonify({"current_url": result[0] if result and result[0] else ""})
@@ -803,6 +852,11 @@ def current_url():
 @login_required
 def search():
     try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing search endpoint")
+            flash('Please log in to perform a search.', 'error')
+            return redirect(url_for('login'))
+        
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (int(current_user.id),))
