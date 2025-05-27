@@ -25,8 +25,6 @@ import aiohttp
 import re
 import io
 from heapq import heappush, heappop
-import threading
-import concurrent.futures
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
@@ -280,6 +278,7 @@ async def crawl_website(start_url, user_id, library_id):
         conn.close()
         return crawled_data
     
+    browser = None
     try:
         async with async_playwright() as p:
             logger.info(f"Memory usage before browser launch: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -297,173 +296,174 @@ async def crawl_website(start_url, user_id, library_id):
             logger.info(f"Memory usage after browser launch: {process.memory_info().rss / 1024 / 1024:.2f} MB")
             logger.info(f"CPU usage after browser launch: {psutil.cpu_percent()}%")
             
-            try:
-                while to_visit and items_crawled < max_items:
+            while to_visit and items_crawled < max_items:
+                try:
+                    priority, url = heappop(to_visit)
+                    if url in visited_urls or not url.startswith(('http://', 'https://')):
+                        logger.debug(f"Skipping invalid or visited URL: {url}")
+                        continue
+                    if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
+                        logger.debug(f"Skipping non-textual URL: {url}")
+                        continue
+                    if 'modal' in url.lower():
+                        logger.debug(f"Skipping modal URL: {url}")
+                        continue
+                    visited_urls.add(url)
+                    links_scanned += 1
+                    logger.info(f"Scanning URL: {url} (priority: {priority}, links_found={links_found}, links_scanned={links_scanned})")
+                    
+                    c.execute("UPDATE progress SET current_url = ?, links_found = ?, links_scanned = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                              (url, links_found, links_scanned, str(user_id), start_url, library_id))
+                    conn.commit()
+                    
+                    page = await browser.new_page()
                     try:
-                        priority, url = heappop(to_visit)
-                        if url in visited_urls or not url.startswith(('http://', 'https://')):
-                            logger.debug(f"Skipping invalid or visited URL: {url}")
-                            continue
-                        if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
-                            logger.debug(f"Skipping non-textual URL: {url}")
-                            continue
-                        if 'modal' in url.lower():
-                            logger.debug(f"Skipping modal URL: {url}")
-                            continue
-                        visited_urls.add(url)
-                        links_scanned += 1
-                        logger.debug(f"Scanning URL: {url} (priority: {priority})")
-                        
-                        c.execute("UPDATE progress SET current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                                  (url, str(user_id), start_url, library_id))
-                        conn.commit()
-                        
-                        page = await browser.new_page()
+                        logger.info(f"Navigating to {url}")
+                        response = await page.goto(url, timeout=90000, wait_until='networkidle')
+                        logger.info(f"Memory usage after navigation to {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                        logger.info(f"CPU usage after navigation: {psutil.cpu_percent()}%")
+                    except PlaywrightTimeoutError as e:
+                        logger.warning(f"Timeout navigating to {url}: {str(e)}")
+                        await page.close()
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error navigating to {url}: {str(e)}\n{traceback.format_exc()}")
+                        await page.close()
+                        continue
+                    
+                    if response is None or response.status >= 400:
+                        logger.warning(f"Failed to load {url}: Status {response.status if response else 'None'}")
+                        await page.close()
+                        continue
+                    
+                    # Wait for AngularJS and Materialize CSS stabilization
+                    try:
+                        await page.wait_for_function('window.angular && window.angular.element(document).injector().get("$http").pendingRequests.length === 0', timeout=15000)
+                        await page.wait_for_function('typeof $ !== "undefined" && $(".collapsible").collapsible', timeout=15000)
+                        await page.wait_for_timeout(5000)  # Extra buffer for animations
+                        logger.debug("AngularJS and Materialize CSS content stabilized")
+                    except Exception as e:
+                        logger.debug(f"Stabilization wait failed: {e}")
+                    
+                    # Close modals on main page
+                    try:
+                        modal_close_selectors = ['.modal-close', '.close', '[aria-label="close"]', 'button.close', '.ot-sdk-close']
+                        for selector in modal_close_selectors:
+                            close_buttons = await page.query_selector_all(selector)
+                            for button in close_buttons:
+                                try:
+                                    await button.click(timeout=5000)
+                                    await page.wait_for_timeout(2000)
+                                    logger.debug(f"Closed modal with selector: {selector} on main page")
+                                except Exception as e:
+                                    logger.debug(f"Error closing modal {selector} on main page: {e}")
+                    except Exception as e:
+                        logger.error(f"Error closing modals on main page: {str(e)}")
+                    
+                    # Process frames
+                    frames = [f for f in page.frames if f.url != 'about:blank' and f.url and not re.search(r'(ads|analytics|doubleclick|googlesyndication)', f.url, re.IGNORECASE)]
+                    logger.info(f"Found {len(frames)} valid frames on {url}")
+                    frame_data = []
+                    for frame in [page.main_frame] + frames:  # Prioritize main frame
                         try:
-                            logger.info(f"Navigating to {url}")
-                            response = await page.goto(url, timeout=60000, wait_until='networkidle')
-                            logger.info(f"Memory usage after navigation to {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-                            logger.info(f"CPU usage after navigation: {psutil.cpu_percent()}%")
-                        except PlaywrightTimeoutError as e:
-                            logger.warning(f"Timeout navigating to {url}: {str(e)}")
-                            await page.close()
-                            continue
-                        except Exception as e:
-                            logger.error(f"Error navigating to {url}: {str(e)}\n{traceback.format_exc()}")
-                            await page.close()
-                            continue
-                        
-                        if response is None or response.status >= 400:
-                            logger.warning(f"Failed to load {url}: Status {response.status if response else 'None'}")
-                            await page.close()
-                            continue
-                        
-                        # Wait for AngularJS and Materialize CSS stabilization
-                        try:
-                            await page.wait_for_function('window.angular && window.angular.element(document).injector().get("$http").pendingRequests.length === 0', timeout=10000)
-                            await page.wait_for_function('typeof $ !== "undefined" && $(".collapsible").collapsible', timeout=10000)
-                            logger.debug("AngularJS and Materialize CSS content stabilized")
-                        except Exception as e:
-                            logger.debug(f"Stabilization wait failed: {e}")
-                        
-                        # Close modals on main page
-                        try:
-                            modal_close_selectors = ['.modal-close', '.close', '[aria-label="close"]', 'button.close']
-                            for selector in modal_close_selectors:
-                                close_buttons = await page.query_selector_all(selector)
-                                for button in close_buttons:
-                                    try:
-                                        await button.click(timeout=5000)
-                                        await page.wait_for_timeout(2000)
-                                        logger.debug(f"Closed modal with selector: {selector} on main page")
-                                    except Exception as e:
-                                        logger.debug(f"Error closing modal {selector} on main page: {e}")
-                        except Exception as e:
-                            logger.error(f"Error closing modals on main page: {str(e)}")
-                        
-                        # Process frames
-                        frames = [f for f in page.frames if f.url != 'about:blank' and f.url]
-                        logger.debug(f"Found {len(frames)} valid frames on {url}")
-                        frame_data = []
-                        for frame in [page.main_frame] + frames:  # Prioritize main frame
+                            frame_name = frame.name or frame.url or 'main'
+                            logger.debug(f"Processing frame: {frame_name}")
+                            
+                            # Verify frame is attached
                             try:
-                                frame_name = frame.name or frame.url or 'main'
-                                logger.debug(f"Processing frame: {frame_name}")
-                                
-                                # Verify frame is attached
-                                try:
-                                    await frame.evaluate('true')
-                                except Exception as e:
-                                    logger.debug(f"Skipping detached frame {frame_name}: {e}")
-                                    continue
-                                
-                                # Scroll to load lazy content
-                                try:
-                                    for _ in range(3):
-                                        await frame.evaluate('window.scrollTo(0, document.body.scrollHeight);')
-                                        await frame.wait_for_timeout(2000)
-                                except Exception as e:
-                                    logger.debug(f"Error scrolling in frame {frame_name}: {e}")
-                                
-                                # Expand all collapsible sections
-                                try:
-                                    accordion_selectors = [
-                                        '.collapsible-header', '.pii-tag.country-tag',  # High priority
-                                        '[aria-expanded="false"]',
-                                        '.accordion, .accordion-toggle, .accordion-header',
-                                        '.expand, .toggle, .collapsible, .collapse',
-                                        '[data-toggle], [data-expand], [data-collapse]',
-                                        '[role="button"], [aria-controls]',
-                                        '.directory-item, .collapse-header, .panel-heading',
-                                        'a, button, div, h2, h3, h4, li',  # Broad fallback
-                                    ]
-                                    click_count = 0
-                                    max_clicks = 500
-                                    for selector in accordion_selectors:
+                                await frame.evaluate('true')
+                            except Exception as e:
+                                logger.debug(f"Skipping detached frame {frame_name}: {e}")
+                                continue
+                            
+                            # Scroll to load lazy content
+                            try:
+                                for _ in range(2):
+                                    await frame.evaluate('window.scrollTo(0, document.body.scrollHeight);')
+                                    await frame.wait_for_timeout(2000)
+                            except Exception as e:
+                                logger.debug(f"Error scrolling in frame {frame_name}: {e}")
+                            
+                            # Expand all collapsible sections
+                            try:
+                                accordion_selectors = [
+                                    '.collapsible-header', '.pii-tag.country-tag',  # High priority
+                                    '[aria-expanded="false"]',
+                                    '.accordion, .accordion-toggle, .accordion-header',
+                                    '.expand, .toggle, .collapsible, .collapse',
+                                    '[data-toggle], [data-expand], [data-collapse]',
+                                    '[role="button"], [aria-controls]',
+                                    '.directory-item, .collapse-header, .panel-heading',
+                                ]
+                                click_count = 0
+                                max_clicks = 500
+                                for selector in accordion_selectors:
+                                    if click_count >= max_clicks:
+                                        logger.warning(f"Reached max click limit ({max_clicks}) in frame: {frame_name}")
+                                        break
+                                    elements = await frame.query_selector_all(selector)
+                                    logger.debug(f"Found {len(elements)} elements for selector: {selector} in frame: {frame_name}")
+                                    for element in elements:
                                         if click_count >= max_clicks:
-                                            logger.warning(f"Reached max click limit ({max_clicks}) in frame: {frame_name}")
                                             break
-                                        elements = await frame.query_selector_all(selector)
-                                        logger.debug(f"Found {len(elements)} elements for selector: {selector} in frame: {frame_name}")
-                                        for element in elements:
-                                            if click_count >= max_clicks:
-                                                break
-                                            try:
-                                                is_visible = await element.is_visible()
-                                                if not is_visible:
-                                                    logger.debug(f"Skipping invisible element for selector: {selector} in frame: {frame_name}")
-                                                    continue
-                                                aria_expanded = await element.get_attribute('aria-expanded')
-                                                if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag']:
-                                                    for _ in range(3):  # Retry up to 3 times
-                                                        try:
-                                                            await element.click(timeout=5000)
-                                                            await frame.wait_for_timeout(4000)
-                                                            # Wait for collapsible body to appear
-                                                            await frame.wait_for_selector('.collapsible-body', state='visible', timeout=5000)
-                                                            click_count += 1
-                                                            logger.debug(f"Clicked collapsible element #{click_count} with selector: {selector} in frame: {frame_name}")
-                                                            break
-                                                        except Exception as e:
-                                                            logger.debug(f"Retry clicking element {selector} in frame: {e}")
-                                                            await frame.wait_for_timeout(1000)
-                                            except Exception as e:
-                                                logger.debug(f"Error processing element {selector} in frame: {e}")
-                                except Exception as e:
-                                    logger.error(f"Error during collapsible section expansion in frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
+                                        try:
+                                            is_visible = await element.is_visible()
+                                            if not is_visible:
+                                                logger.debug(f"Skipping invisible element for selector: {selector} in frame: {frame_name}")
+                                                continue
+                                            aria_expanded = await element.get_attribute('aria-expanded')
+                                            if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag']:
+                                                for _ in range(3):  # Retry up to 3 times
+                                                    try:
+                                                        # Try JavaScript click as fallback
+                                                        await frame.evaluate('''(element) => element.click()''', element)
+                                                        await frame.wait_for_timeout(5000)
+                                                        # Wait for collapsible body
+                                                        await frame.wait_for_selector('.collapsible-body', state='visible', timeout=10000)
+                                                        click_count += 1
+                                                        logger.info(f"Clicked collapsible element #{click_count} with selector: {selector} in frame: {frame_name}")
+                                                        break
+                                                    except Exception as e:
+                                                        logger.debug(f"Retry clicking element {selector} in frame: {e}")
+                                                        await frame.wait_for_timeout(1000)
+                                        except Exception as e:
+                                            logger.debug(f"Error processing element {selector} in frame: {e}")
+                            except Exception as e:
+                                logger.error(f"Error during collapsible section expansion in frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
+                            
+                            # Simulate directory interactions (fallback)
+                            try:
+                                search_inputs = await frame.query_selector_all('input[type="search"], input#search, input[name*="search"]')
+                                if search_inputs:
+                                    for input_field in search_inputs[:1]:
+                                        is_visible = await input_field.is_visible()
+                                        input_id = await input_field.get_attribute('id') or 'unknown'
+                                        if is_visible and 'nav' not in input_id.lower():
+                                            await input_field.fill("query")
+                                            await frame.wait_for_timeout(2000)
+                                            await frame.keyboard.press("Enter")
+                                            await frame.wait_for_timeout(3000)
+                                            logger.debug(f"Performed search interaction in frame: {frame_name}")
+                                        else:
+                                            logger.debug(f"Skipping irrelevant or invisible search input {input_id} in frame: {frame_name}")
                                 
-                                # Simulate directory interactions (fallback)
-                                try:
-                                    search_inputs = await frame.query_selector_all('input[type="search"], input#search, input[name*="search"]')
-                                    if search_inputs:
-                                        for input_field in search_inputs[:1]:
-                                            is_visible = await input_field.is_visible()
-                                            input_id = await input_field.get_attribute('id') or 'unknown'
-                                            if is_visible and 'nav' not in input_id.lower():
-                                                await input_field.fill("query")
-                                                await frame.wait_for_timeout(2000)
-                                                await frame.keyboard.press("Enter")
+                                filter_selectors = ['.filter', '.tab', '[role="tab"]', '[role="button"]', 'button', 'select']
+                                for selector in filter_selectors:
+                                    elements = await frame.query_selector_all(selector)
+                                    for element in elements[:3]:
+                                        try:
+                                            is_visible = await element.is_visible()
+                                            if is_visible:
+                                                await element.click(timeout=5000)
                                                 await frame.wait_for_timeout(3000)
-                                                logger.debug(f"Performed search interaction in frame: {frame_name}")
-                                            else:
-                                                logger.debug(f"Skipping irrelevant or invisible search input {input_id} in frame: {frame_name}")
-                                    
-                                    filter_selectors = ['.filter', '.tab', '[role="tab"]', '[role="button"]', 'button', 'select']
-                                    for selector in filter_selectors:
-                                        elements = await frame.query_selector_all(selector)
-                                        for element in elements[:3]:
-                                            try:
-                                                is_visible = await element.is_visible()
-                                                if is_visible:
-                                                    await element.click(timeout=5000)
-                                                    await frame.wait_for_timeout(3000)
-                                                    logger.debug(f"Clicked element with selector: {selector} in frame: {frame_name}")
-                                            except Exception as e:
-                                                logger.debug(f"Error clicking {selector} in frame: {e}")
-                                except Exception as e:
-                                    logger.error(f"Error during directory interactions in frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
-                                
-                                # Grok API analysis
+                                                logger.debug(f"Clicked element with selector: {selector} in frame: {frame_name}")
+                                        except Exception as e:
+                                            logger.debug(f"Error clicking {selector} in frame: {e}")
+                            except Exception as e:
+                                logger.error(f"Error during directory interactions in frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
+                            
+                            # Grok API analysis
+                            try:
                                 actions = await analyze_page_for_links(frame)
                                 if not actions:
                                     logger.warning(f"Grok API returned no actions for frame {frame_name}, using fallback selectors")
@@ -491,7 +491,7 @@ async def crawl_website(start_url, user_id, library_id):
                                                             if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and parsed_url.scheme in ('http', 'https'):
                                                                 add_to_visit(absolute_url, get_url_priority(absolute_url))
                                                                 links_found += 1
-                                                                logger.debug(f"New link found via click: {absolute_url}, links_found={links_found} in frame: {frame_name}")
+                                                                logger.info(f"New link found via click: {absolute_url}, links_found={links_found} in frame: {frame_name}")
                                                 except Exception as e:
                                                     logger.debug(f"Error clicking element {action['selector']} in frame: {e}")
                                         elif action['type'] == 'scroll':
@@ -507,14 +507,17 @@ async def crawl_website(start_url, user_id, library_id):
                                                 logger.debug(f"Filled input {action['selector']} with value: {action['value']} in frame: {frame_name}")
                                     except Exception as e:
                                         logger.debug(f"Error performing action {action} in frame: {e}")
-                                
-                                # Final wait for dynamic content
-                                await frame.wait_for_timeout(5000)
-                                
-                                # Collect content and links
-                                content_type = response.headers.get('content-type', '').lower()
-                                cleaned_content = None
-                                if 'text/html' in content_type:
+                            except Exception as e:
+                                logger.error(f"Error in Grok API analysis for frame {frame_name}: {str(e)}")
+                            
+                            # Final wait for dynamic content
+                            await frame.wait_for_timeout(5000)
+                            
+                            # Collect content and links
+                            content_type = response.headers.get('content-type', '').lower()
+                            cleaned_content = None
+                            if 'text/html' in content_type:
+                                try:
                                     content = await frame.content()
                                     cleaned_content = clean_content(content)
                                     if not cleaned_content or len(cleaned_content.strip()) < 100:
@@ -523,9 +526,12 @@ async def crawl_website(start_url, user_id, library_id):
                                         embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
                                         if embedding is not None:
                                             frame_data.append((url, cleaned_content, embedding.tolist(), None, library_id))
-                                            logger.debug(f"Content found in frame {frame_name} for {url}")
-                                
-                                # Enhanced link extraction
+                                            logger.info(f"Content found in frame {frame_name} for {url}")
+                                except Exception as e:
+                                    logger.error(f"Error collecting content in frame {frame_name}: {str(e)}")
+                            
+                            # Enhanced link extraction
+                            try:
                                 links = await frame.evaluate('''() => {
                                     const urls = [];
                                     document.querySelectorAll('a[href], [href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], [ng-href], [data-ng-href], [data-action], [data-target], meta[content][http-equiv="refresh"], link[rel="sitemap"]').forEach(el => {
@@ -557,19 +563,22 @@ async def crawl_website(start_url, user_id, library_id):
                                     });
                                     return [...new Set(urls)];
                                 }''')
-                                logger.debug(f"Found {len(links)} links in frame {frame_name} on {url}: {links}")
+                                logger.debug(f"Found {len(links)} links in frame {frame_name} on {url}")
                                 for link in links:
                                     absolute_url = urllib.parse.urljoin(url, link)
                                     parsed_url = urllib.parse.urlparse(absolute_url)
                                     if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and parsed_url.scheme in ('http', 'https'):
                                         add_to_visit(absolute_url, get_url_priority(absolute_url))
                                         links_found += 1
-                                        logger.debug(f"New link found: {absolute_url}, links_found={links_found} in frame: {frame_name}")
+                                        logger.info(f"New link found: {absolute_url}, links_found={links_found} in frame: {frame_name}")
                             except Exception as e:
-                                logger.error(f"Error processing frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
-                        
-                        # Process PDF content
-                        if 'application/pdf' in content_type:
+                                logger.error(f"Error extracting links in frame {frame_name}: {str(e)}")
+                        except Exception as e:
+                            logger.error(f"Error processing frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
+                    
+                    # Process PDF content
+                    if 'application/pdf' in content_type:
+                        try:
                             cleaned_content = await extract_pdf_text(url)
                             if not cleaned_content or len(cleaned_content.strip()) < 100:
                                 logger.warning(f"No valid textual content in PDF at {url}")
@@ -577,50 +586,46 @@ async def crawl_website(start_url, user_id, library_id):
                                 embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
                                 if embedding is not None:
                                     frame_data.append((url, cleaned_content, embedding.tolist(), None, library_id))
-                                    logger.debug(f"Content found in PDF for {url}")
-                        
-                        # Aggregate frame data
-                        for data in frame_data:
-                            items_crawled += 1
-                            crawled_data.append(data)
-                        
-                        c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                                  (links_found, links_scanned, items_crawled, "running", str(user_id), start_url, library_id))
-                        conn.commit()
-                        
-                        await page.close()
-                        logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-                        logger.info(f"CPU usage after scanning: {psutil.cpu_percent()}%")
-                    except Exception as e:
-                        logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
-                        c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                                  (f"error: {str(e)}", str(user_id), start_url, library_id))
-                        conn.commit()
-                        continue
-                logger.info(f"Crawl complete: items_crawled={items_crawled}")
-                c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                          ("complete", "", str(user_id), start_url, library_id))
-                conn.commit()
-            except Exception as e:
-                logger.error(f"Unexpected error during crawl: {str(e)}\n{traceback.format_exc()}")
-                c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                          (f"error: {str(e)}", "", str(user_id), start_url, library_id))
-                conn.commit()
-            finally:
-                await browser.close()
-                conn.close()
-        if not crawled_data and links_found == links_scanned:
-            flash("No new textual content found; all URLs already exist or lack meaningful text.", 'info')
-        return crawled_data
+                                    logger.info(f"Content found in PDF for {url}")
+                        except Exception as e:
+                            logger.error(f"Error processing PDF at {url}: {str(e)}")
+                    
+                    # Aggregate frame data
+                    for data in frame_data:
+                        items_crawled += 1
+                        crawled_data.append(data)
+                    
+                    c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                              (links_found, links_scanned, items_crawled, "running", str(user_id), start_url, library_id))
+                    conn.commit()
+                    
+                    await page.close()
+                    logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                    logger.info(f"CPU usage after scanning: {psutil.cpu_percent()}%")
+                except Exception as e:
+                    logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
+                    c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                              (f"error: {str(e)}", str(user_id), start_url, library_id))
+                    conn.commit()
+                    continue
+            
+            logger.info(f"Crawl complete: items_crawled={items_crawled}, links_found={links_found}")
+            c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                      ("complete", "", str(user_id), start_url, library_id))
+            conn.commit()
     except Exception as e:
-        logger.error(f"Unexpected error in crawl_website: {str(e)}\n{traceback.format_exc()}")
+        logger.error(f"Unexpected error during crawl: {str(e)}\n{traceback.format_exc()}")
         c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                   (f"error: {str(e)}", "", str(user_id), start_url, library_id))
         conn.commit()
-        conn.close()
-        return crawled_data
     finally:
+        if browser:
+            await browser.close()
+        conn.close()
         await unload_embedding_model()
+        if not crawled_data and links_found == links_scanned:
+            flash("No new textual content found; all URLs already exist or lack meaningful text.", 'info')
+        return crawled_data
 
 @app.route('/')
 def index():
@@ -946,16 +951,7 @@ def crawl():
             
             logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
             try:
-                def run_crawl(user_id, start_url, library_id):
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        return loop.run_until_complete(crawl_website(start_url, user_id, int(library_id)))
-                    finally:
-                        loop.close()
-                
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    crawled_data = executor.submit(run_crawl, current_user.id, start_url, library_id).result()
+                crawled_data = asyncio.run(crawl_website(start_url, current_user.id, int(library_id)))
                 
                 if crawled_data:
                     conn = get_db_connection()
@@ -1058,19 +1054,14 @@ def search():
                 return render_template('search.html', libraries=libraries, prompts=prompts)
             
             logger.info(f"Search query: {query} in library {library_id}")
-            def run_embedding():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    tokenizer, model = loop.run_until_complete(load_embedding_model())
-                    query_embedding = loop.run_until_complete(generate_embedding(query, tokenizer, model))
-                    loop.run_until_complete(unload_embedding_model())
-                    return query_embedding
-                finally:
-                    loop.close()
-            
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                query_embedding = executor.submit(run_embedding).result()
+            try:
+                tokenizer, model = asyncio.run(load_embedding_model())
+                query_embedding = asyncio.run(generate_embedding(query, tokenizer, model))
+                asyncio.run(unload_embedding_model())
+            except Exception as e:
+                logger.error(f"Error generating query embedding: {str(e)}")
+                flash('Failed to generate query embedding.', 'error')
+                return render_template('search.html', libraries=libraries, prompts=prompts)
             
             if query_embedding is None:
                 flash('Failed to generate query embedding.', 'error')
@@ -1123,25 +1114,16 @@ def search():
 def test_playwright():
     try:
         logger.info("Starting Playwright test")
-        def run_playwright():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                async def inner():
-                    async with async_playwright() as p:
-                        browser = await p.chromium.launch()
-                        page = await browser.new_page()
-                        await page.goto('https://example.com')
-                        content = await page.content()
-                        await browser.close()
-                        return content
-                return loop.run_until_complete(inner())
-            finally:
-                loop.close()
+        async def run_playwright():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page()
+                await page.goto('https://example.com')
+                content = await page.content()
+                await browser.close()
+                return content
         
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            content = executor.submit(run_playwright).result()
-        
+        content = asyncio.run(run_playwright())
         logger.info("Playwright test completed successfully")
         return f"Playwright test successful: {len(content)} bytes"
     except Exception as e:
