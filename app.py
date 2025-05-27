@@ -14,7 +14,7 @@ import urllib.parse
 import sqlite3
 import json
 import psutil
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from bs4 import BeautifulSoup
 import traceback
 from openai import OpenAI
@@ -132,7 +132,7 @@ def clean_content(html):
 async def extract_pdf_text(url):
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=30) as response:
                 if response.status != 200 or 'application/pdf' not in response.headers.get('Content-Type', ''):
                     return None
                 pdf_data = await response.read()
@@ -230,7 +230,6 @@ def normalize_url(url):
         parsed = urllib.parse.urlparse(url)
         if not parsed.netloc:
             return None
-        # Ensure www. prefix for consistency
         if not parsed.netloc.startswith('www.'):
             parsed = parsed._replace(netloc='www.' + parsed.netloc)
         return parsed.geturl()
@@ -241,6 +240,8 @@ async def crawl_website(start_url, user_id, library_id):
     logger.info(f"Starting crawl for {start_url} by user {user_id} in library {library_id}")
     process = psutil.Process()
     logger.info(f"Memory usage before crawl: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+    cpu_percent = psutil.cpu_percent()
+    logger.info(f"CPU usage before crawl: {cpu_percent}%")
     
     visited_urls = set()
     to_visit = []
@@ -271,7 +272,7 @@ async def crawl_website(start_url, user_id, library_id):
     try:
         embedding_tokenizer, embedding_model = await load_embedding_model()
     except Exception as e:
-        logger.error(f"Failed to load embedding model: {str(e)}")
+        logger.error(f"Failed to load embedding model: {str(e)}\n{traceback.format_exc()}")
         c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                   (f"error: {str(e)}", "", str(user_id), start_url, library_id))
         conn.commit()
@@ -280,7 +281,21 @@ async def crawl_website(start_url, user_id, library_id):
     
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'])
+            logger.info(f"Memory usage before browser launch: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+            logger.info(f"CPU usage before browser launch: {psutil.cpu_percent()}%")
+            try:
+                browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'])
+            except Exception as e:
+                logger.error(f"Failed to launch browser: {str(e)}\n{traceback.format_exc()}")
+                c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                          (f"error: Failed to launch browser: {str(e)}", "", str(user_id), start_url, library_id))
+                conn.commit()
+                conn.close()
+                return crawled_data
+            
+            logger.info(f"Memory usage after browser launch: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+            logger.info(f"CPU usage after browser launch: {psutil.cpu_percent()}%")
+            
             try:
                 while to_visit and items_crawled < max_items:
                     try:
@@ -300,7 +315,20 @@ async def crawl_website(start_url, user_id, library_id):
                         conn.commit()
                         
                         page = await browser.new_page()
-                        response = await page.goto(url, timeout=30000, wait_until='networkidle')
+                        try:
+                            logger.info(f"Navigating to {url}")
+                            response = await page.goto(url, timeout=30000, wait_until='networkidle')
+                            logger.info(f"Memory usage after navigation to {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                            logger.info(f"CPU usage after navigation: {psutil.cpu_percent()}%")
+                        except PlaywrightTimeoutError as e:
+                            logger.warning(f"Timeout navigating to {url}: {str(e)}")
+                            await page.close()
+                            continue
+                        except Exception as e:
+                            logger.error(f"Error navigating to {url}: {str(e)}\n{traceback.format_exc()}")
+                            await page.close()
+                            continue
+                        
                         if response is None or response.status >= 400:
                             logger.warning(f"Failed to load {url}: Status {response.status if response else 'None'}")
                             await page.close()
@@ -412,6 +440,7 @@ async def crawl_website(start_url, user_id, library_id):
                         
                         await page.close()
                         logger.info(f"Memory usage after scanning {url}: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                        logger.info(f"CPU usage after scanning: {psutil.cpu_percent()}%")
                     except Exception as e:
                         logger.error(f"Error crawling {url}: {str(e)}\n{traceback.format_exc()}")
                         c.execute("UPDATE progress SET status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
@@ -421,6 +450,11 @@ async def crawl_website(start_url, user_id, library_id):
                 logger.info(f"Crawl complete: items_crawled={items_crawled}")
                 c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                           ("complete", "", str(user_id), start_url, library_id))
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Unexpected error during crawl: {str(e)}\n{traceback.format_exc()}")
+                c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                          (f"error: {str(e)}", "", str(user_id), start_url, library_id))
                 conn.commit()
             finally:
                 await browser.close()
@@ -762,7 +796,6 @@ def crawl():
             
             logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
             try:
-                # Run crawl_website in a thread to avoid event loop conflicts
                 def run_crawl(user_id, start_url, library_id):
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
