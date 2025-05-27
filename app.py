@@ -154,10 +154,10 @@ async def analyze_page_for_links(page):
         
         html = await page.content()
         prompt = """
-        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dropdowns, tabs, search inputs, filters, expandable sections) that could lead to pages with textual content when clicked, scrolled, or interacted with. Prioritize elements like search buttons, filter dropdowns, tabs, 'Load More' buttons, or links within lists. Suggest specific actions (e.g., click selectors, scroll, fill input) to uncover more links, including multi-step paths (e.g., select a filter, then click a result). Return a JSON list of actions, each with 'type' ('click', 'scroll', 'fill'), 'selector' (CSS selector for click/fill or empty for scroll), 'value' (input value for fill, empty otherwise), and 'priority' (1 for high, 2 for medium, 3 for low). Ensure the response is valid JSON.
+        Analyze the provided HTML to identify interactive elements (e.g., buttons, links, dropdowns, tabs, search inputs, accordion toggles, collapsible panels) that could reveal additional links or content when clicked, scrolled, or interacted with. Prioritize elements that toggle expandable sections (e.g., accordion headers, collapsible panels with classes like 'accordion', 'toggle', or attributes like 'aria-expanded', 'data-toggle') or trigger dynamic content loading (e.g., 'Load More', search buttons, filter dropdowns). Suggest specific actions (e.g., click selectors, scroll, fill input) to uncover more links, including multi-step paths (e.g., click an accordion header to expand a section, then extract links). Return a JSON list of actions, each with 'type' ('click', 'scroll', 'fill'), 'selector' (CSS selector for click/fill or empty for scroll), 'value' (input value for fill, empty otherwise), and 'priority' (1 for high, 2 for medium, 3 for low). Ensure the response is valid JSON.
         Example response: [
-            {"type": "click", "selector": "button.search", "value": "", "priority": 1},
-            {"type": "fill", "selector": "input#search", "value": "privacy", "priority": 1},
+            {"type": "click", "selector": "[aria-expanded='false'], .accordion-toggle, .collapsible", "value": "", "priority": 1},
+            {"type": "fill", "selector": "input#search", "value": "query", "priority": 1},
             {"type": "scroll", "selector": "", "value": "", "priority": 2}
         ]
         """
@@ -166,9 +166,9 @@ async def analyze_page_for_links(page):
             model="grok-3-latest",
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": f"HTML: {html[:4000]}"}
+                {"role": "user", "content": f"HTML: {html[:8000]}"}
             ],
-            max_tokens=1500
+            max_tokens=2000
         )
         raw_response = completion.choices[0].message.content
         logger.debug(f"Grok API raw response: {raw_response}")
@@ -334,17 +334,50 @@ async def crawl_website(start_url, user_id, library_id):
                             await page.close()
                             continue
                         
-                        # Increased scrolling to load dynamic content
+                        # Scroll to load lazy content
                         for _ in range(5):
                             await page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
                             await page.wait_for_timeout(3000)
                         
-                        # Simulate directory interactions
+                        # Expand all collapsible sections
+                        try:
+                            accordion_selectors = [
+                                '[aria-expanded="false"]',
+                                '.accordion, .accordion-toggle, .accordion-header',
+                                '.expand, .toggle, .collapsible',
+                                '[data-toggle], [data-expand], [data-collapse]',
+                                '[role="button"], [aria-controls]',
+                                'a, button, div, h2, h3, h4, li',  # Broad selector
+                            ]
+                            click_count = 0
+                            max_clicks = 500  # Prevent infinite loops
+                            for selector in accordion_selectors:
+                                if click_count >= max_clicks:
+                                    logger.warning(f"Reached max click limit ({max_clicks})")
+                                    break
+                                elements = await page.query_selector_all(selector)
+                                for element in elements:
+                                    if click_count >= max_clicks:
+                                        break
+                                    try:
+                                        # Check if element is a toggle (not already expanded)
+                                        aria_expanded = await element.get_attribute('aria-expanded')
+                                        if aria_expanded == 'false' or aria_expanded is None:  # Click if collapsed or unknown
+                                            await element.click(timeout=5000)
+                                            await page.wait_for_timeout(4000)  # Wait for DOM update
+                                            click_count += 1
+                                            logger.debug(f"Clicked collapsible element #{click_count} with selector: {selector}")
+                                    except Exception as e:
+                                        logger.debug(f"Error clicking collapsible element {selector}: {e}")
+                        except Exception as e:
+                            logger.error(f"Error during collapsible section expansion: {str(e)}")
+                        
+                        # Simulate directory interactions (fallback)
                         try:
                             # Search bar interaction
                             search_inputs = await page.query_selector_all('input[type="search"], input#search, input[name*="search"]')
                             if search_inputs:
-                                await search_inputs[0].fill("privacy")
+                                await search_inputs[0].fill("query")
                                 await page.wait_for_timeout(2000)
                                 await page.keyboard.press("Enter")
                                 await page.wait_for_timeout(3000)
@@ -354,7 +387,7 @@ async def crawl_website(start_url, user_id, library_id):
                             filter_selectors = ['.filter', '.tab', '[role="tab"]', '[role="button"]', 'button', 'select']
                             for selector in filter_selectors:
                                 elements = await page.query_selector_all(selector)
-                                for element in elements[:3]:  # Limit to 3 per selector
+                                for element in elements[:3]:
                                     try:
                                         await element.click(timeout=5000)
                                         await page.wait_for_timeout(3000)
@@ -369,11 +402,11 @@ async def crawl_website(start_url, user_id, library_id):
                         if not actions:
                             logger.warning("Grok API returned no actions, using fallback selectors")
                             actions = [
-                                {"type": "click", "selector": ".filter, .tab, [role='tab'], [role='button'], button, a[href*='resource']", "value": "", "priority": 1},
+                                {"type": "click", "selector": "[aria-expanded='false'], .accordion-toggle, .collapsible, [data-toggle], a[href*='resource']", "value": "", "priority": 1},
                                 {"type": "scroll", "selector": "", "value": "", "priority": 2}
                             ]
                         
-                        for action in actions[:10]:  # Increased to 10 actions
+                        for action in actions[:10]:
                             try:
                                 if action['type'] == 'click' and action['selector']:
                                     elements = await page.query_selector_all(action['selector'])
