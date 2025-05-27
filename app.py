@@ -338,53 +338,64 @@ async def crawl_website(start_url, user_id, library_id):
                             await page.close()
                             continue
                         
-                        # Wait for AngularJS content to load
+                        # Wait for AngularJS and Materialize CSS stabilization
                         try:
                             await page.wait_for_function('window.angular && window.angular.element(document).injector().get("$http").pendingRequests.length === 0', timeout=10000)
-                            logger.debug("AngularJS content stabilized")
+                            await page.wait_for_function('typeof $ !== "undefined" && $(".collapsible").collapsible', timeout=10000)
+                            logger.debug("AngularJS and Materialize CSS content stabilized")
                         except Exception as e:
-                            logger.debug(f"AngularJS stabilization wait failed: {e}")
+                            logger.debug(f"Stabilization wait failed: {e}")
+                        
+                        # Close modals on main page
+                        try:
+                            modal_close_selectors = ['.modal-close', '.close', '[aria-label="close"]', 'button.close']
+                            for selector in modal_close_selectors:
+                                close_buttons = await page.query_selector_all(selector)
+                                for button in close_buttons:
+                                    try:
+                                        await button.click(timeout=5000)
+                                        await page.wait_for_timeout(2000)
+                                        logger.debug(f"Closed modal with selector: {selector} on main page")
+                                    except Exception as e:
+                                        logger.debug(f"Error closing modal {selector} on main page: {e}")
+                        except Exception as e:
+                            logger.error(f"Error closing modals on main page: {str(e)}")
                         
                         # Process frames
-                        frames = page.frames
-                        logger.debug(f"Found {len(frames)} frames on {url}")
+                        frames = [f for f in page.frames if f.url != 'about:blank' and f.url]
+                        logger.debug(f"Found {len(frames)} valid frames on {url}")
                         frame_data = []
-                        for frame in frames:
+                        for frame in [page.main_frame] + frames:  # Prioritize main frame
                             try:
-                                frame_name = frame.name or frame.url
+                                frame_name = frame.name or frame.url or 'main'
                                 logger.debug(f"Processing frame: {frame_name}")
                                 
-                                # Close any modals
+                                # Verify frame is attached
                                 try:
-                                    modal_close_selectors = ['.modal-close', '.close', '[aria-label="close"]', 'button.close']
-                                    for selector in modal_close_selectors:
-                                        close_buttons = await frame.query_selector_all(selector)
-                                        for button in close_buttons:
-                                            try:
-                                                await button.click(timeout=5000)
-                                                await frame.wait_for_timeout(2000)
-                                                logger.debug(f"Closed modal with selector: {selector} in frame: {frame_name}")
-                                            except Exception as e:
-                                                logger.debug(f"Error closing modal {selector} in frame: {e}")
+                                    await frame.evaluate('true')
                                 except Exception as e:
-                                    logger.error(f"Error closing modals in frame {frame_name}: {str(e)}")
+                                    logger.debug(f"Skipping detached frame {frame_name}: {e}")
+                                    continue
                                 
                                 # Scroll to load lazy content
-                                for _ in range(5):
-                                    await frame.evaluate('window.scrollTo(0, document.body.scrollHeight);')
-                                    await frame.wait_for_timeout(3000)
+                                try:
+                                    for _ in range(3):
+                                        await frame.evaluate('window.scrollTo(0, document.body.scrollHeight);')
+                                        await frame.wait_for_timeout(2000)
+                                except Exception as e:
+                                    logger.debug(f"Error scrolling in frame {frame_name}: {e}")
                                 
                                 # Expand all collapsible sections
                                 try:
                                     accordion_selectors = [
-                                        '.collapsible-header', '.pii-tag.country-tag',
+                                        '.collapsible-header', '.pii-tag.country-tag',  # High priority
                                         '[aria-expanded="false"]',
                                         '.accordion, .accordion-toggle, .accordion-header',
                                         '.expand, .toggle, .collapsible, .collapse',
                                         '[data-toggle], [data-expand], [data-collapse]',
                                         '[role="button"], [aria-controls]',
                                         '.directory-item, .collapse-header, .panel-heading',
-                                        'a, button, div, h2, h3, h4, li',
+                                        'a, button, div, h2, h3, h4, li',  # Broad fallback
                                     ]
                                     click_count = 0
                                     max_clicks = 500
@@ -403,11 +414,13 @@ async def crawl_website(start_url, user_id, library_id):
                                                     logger.debug(f"Skipping invisible element for selector: {selector} in frame: {frame_name}")
                                                     continue
                                                 aria_expanded = await element.get_attribute('aria-expanded')
-                                                if aria_expanded == 'false' or aria_expanded is None:
-                                                    for _ in range(2):
+                                                if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag']:
+                                                    for _ in range(3):  # Retry up to 3 times
                                                         try:
                                                             await element.click(timeout=5000)
                                                             await frame.wait_for_timeout(4000)
+                                                            # Wait for collapsible body to appear
+                                                            await frame.wait_for_selector('.collapsible-body', state='visible', timeout=5000)
                                                             click_count += 1
                                                             logger.debug(f"Clicked collapsible element #{click_count} with selector: {selector} in frame: {frame_name}")
                                                             break
@@ -456,8 +469,7 @@ async def crawl_website(start_url, user_id, library_id):
                                     logger.warning(f"Grok API returned no actions for frame {frame_name}, using fallback selectors")
                                     actions = [
                                         {"type": "click", "selector": ".collapsible-header, .pii-tag.country-tag, [aria-expanded='false'], .accordion-toggle, .collapsible, [data-toggle], .directory-item, a[href*='resource']", "value": "", "priority": 1},
-                                        {"type": "scroll", "selector": "", "value": "", "priority": 2},
-                                        {"type": "frame", "selector": frame_name, "value": "", "priority": 1}
+                                        {"type": "scroll", "selector": "", "value": "", "priority": 2}
                                     ]
                                 
                                 for action in actions[:10]:
