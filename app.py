@@ -269,6 +269,35 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
             except Exception as e:
                 logger.debug(f"Error scrolling in frame {frame_name}: {e}")
             
+            # Extract all links first
+            try:
+                links = await frame.evaluate('''() => {
+                    return Array.from(document.querySelectorAll('a[href]')).map(a => a.href);
+                }''')
+                logger.info(f"Found {len(links)} raw links in frame {frame_name} on {url}")
+                for link in links:
+                    absolute_url = urllib.parse.urljoin(url, link)
+                    if (absolute_url not in visited_urls and 
+                        absolute_url not in [u[2] for u in to_visit] and 
+                        absolute_url.startswith(('http://', 'https://'))):
+                        parsed_url = urllib.parse.urlparse(absolute_url)
+                        if domain_restriction and parsed_url.netloc != base_domain:
+                            logger.debug(f"Skipping external URL {absolute_url} due to domain restriction")
+                            continue
+                        if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', absolute_url, re.IGNORECASE):
+                            logger.debug(f"Skipping non-textual URL {absolute_url}")
+                            continue
+                        if 'modal' in absolute_url.lower():
+                            logger.debug(f"Skipping modal URL {absolute_url}")
+                            continue
+                        new_links.append((absolute_url, depth + 1))
+                        logger.info(f"New link found: {absolute_url}, depth={depth + 1} in frame: {frame_name}")
+                    else:
+                        logger.debug(f"Skipping duplicate or invalid URL {absolute_url}")
+            except Exception as e:
+                logger.error(f"Error extracting general links in frame {frame_name}: {str(e)}")
+            
+            # Try expanding collapsible sections
             accordion_selectors = [
                 '.collapsible-header', '.pii-tag.country-tag',
                 '[aria-expanded="false"]',
@@ -279,51 +308,68 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                 '.directory-item, .collapse-header, .panel-heading',
             ]
             click_count = 0
-            max_clicks = 500
+            max_clicks = 100  # Reduced to prevent infinite loops
             for selector in accordion_selectors:
                 if click_count >= max_clicks or stop_event.is_set():
                     logger.warning(f"Reached max click limit ({max_clicks}) or stop event in frame: {frame_name}")
                     break
-                elements = await frame.query_selector_all(selector)
-                logger.debug(f"Found {len(elements)} elements for selector: {selector} in frame: {frame_name}")
-                for element in elements:
-                    if click_count >= max_clicks or stop_event.is_set():
-                        break
-                    try:
-                        is_visible = await element.is_visible()
-                        if not is_visible:
-                            continue
-                        aria_expanded = await element.get_attribute('aria-expanded')
-                        if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag']:
-                            for _ in range(2):
-                                try:
-                                    await frame.evaluate('''(element) => element.click()''', element)
-                                    await frame.wait_for_timeout(3000)
-                                    await frame.wait_for_selector('.collapsible-body', state='visible', timeout=5000)
-                                    click_count += 1
-                                    logger.info(f"Clicked collapsible element #{click_count} with selector: {selector} in frame: {frame_name}")
-                                    links = await frame.evaluate('''() => {
-                                        return Array.from(document.querySelectorAll('.collapsible-body a[href]')).map(a => a.href);
-                                    }''')
-                                    for link in links:
-                                        absolute_url = urllib.parse.urljoin(url, link)
-                                        if (absolute_url not in visited_urls and 
-                                            absolute_url not in [u[2] for u in to_visit] and 
-                                            absolute_url.startswith(('http://', 'https://'))):
-                                            parsed_url = urllib.parse.urlparse(absolute_url)
-                                            if domain_restriction and parsed_url.netloc != base_domain:
-                                                continue
-                                            new_links.append((absolute_url, depth + 1))
-                                    break
-                                except Exception as e:
-                                    logger.debug(f"Retry clicking element {selector} in frame: {e}")
-                                    await frame.wait_for_timeout(1000)
-                    except Exception as e:
-                        logger.debug(f"Error processing element {selector} in frame: {e}")
+                try:
+                    elements = await frame.query_selector_all(selector)
+                    logger.debug(f"Found {len(elements)} elements for selector: {selector} in frame: {frame_name}")
+                    for element in elements:
+                        if click_count >= max_clicks or stop_event.is_set():
+                            break
+                        try:
+                            is_visible = await element.is_visible()
+                            if not is_visible:
+                                logger.debug(f"Skipping invisible element for selector: {selector}")
+                                continue
+                            aria_expanded = await element.get_attribute('aria-expanded')
+                            if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag']:
+                                for _ in range(2):
+                                    try:
+                                        await frame.evaluate('''(element) => element.click()''', element)
+                                        await frame.wait_for_timeout(3000)
+                                        await frame.wait_for_selector('.collapsible-body, .accordion-body, .collapse.show', state='visible', timeout=5000)
+                                        click_count += 1
+                                        logger.info(f"Clicked collapsible element #{click_count} with selector: {selector} in frame: {frame_name}")
+                                        links = await frame.evaluate('''() => {
+                                            return Array.from(document.querySelectorAll('.collapsible-body a[href], .accordion-body a[href], .collapse.show a[href]')).map(a => a.href);
+                                        }''')
+                                        logger.debug(f"Found {len(links)} links in collapsible body for selector: {selector}")
+                                        for link in links:
+                                            absolute_url = urllib.parse.urljoin(url, link)
+                                            if (absolute_url not in visited_urls and 
+                                                absolute_url not in [u[2] for u in to_visit] and 
+                                                absolute_url.startswith(('http://', 'https://'))):
+                                                parsed_url = urllib.parse.urlparse(absolute_url)
+                                                if domain_restriction and parsed_url.netloc != base_domain:
+                                                    logger.debug(f"Skipping external URL {absolute_url} due to domain restriction")
+                                                    continue
+                                                if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', absolute_url, re.IGNORECASE):
+                                                    logger.debug(f"Skipping non-textual URL {absolute_url}")
+                                                    continue
+                                                if 'modal' in absolute_url.lower():
+                                                    logger.debug(f"Skipping modal URL {absolute_url}")
+                                                    continue
+                                                new_links.append((absolute_url, depth + 1))
+                                                logger.info(f"New link found in collapsible body: {absolute_url}, depth={depth + 1} in frame: {frame_name}")
+                                            else:
+                                                logger.debug(f"Skipping duplicate or invalid URL {absolute_url} in collapsible body")
+                                        break
+                                    except Exception as e:
+                                        logger.debug(f"Retry clicking element {selector} in frame: {e}")
+                                        await frame.wait_for_timeout(1000)
+                        except Exception as e:
+                            logger.debug(f"Error processing element {selector} in frame: {e}")
+                except Exception as e:
+                    logger.error(f"Error querying selector {selector} in frame {frame_name}: {str(e)}")
             
+            # Grok API analysis for additional links
             try:
                 actions = await analyze_page_for_links(frame)
                 if not actions:
+                    logger.warning(f"Grok API returned no actions for frame {frame_name}, using fallback selectors")
                     actions = [
                         {"type": "click", "selector": ".collapsible-header, .pii-tag.country-tag, [aria-expanded='false'], .accordion-toggle, .collapsible, [data-toggle], .directory-item, a[href*='resource']", "value": "", "priority": 1},
                         {"type": "scroll", "selector": "", "value": "", "priority": 2}
@@ -332,89 +378,59 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                 for action in actions[:10]:
                     if stop_event.is_set():
                         break
-                    if action['type'] == 'click' and action['selector']:
-                        elements = await frame.query_selector_all(action['selector'])
-                        for element in elements[:3]:
-                            try:
-                                is_visible = await element.is_visible()
-                                if is_visible:
-                                    await element.click(timeout=5000)
-                                    await frame.wait_for_timeout(3000)
-                                    links = await frame.evaluate('''() => {
-                                        return Array.from(document.querySelectorAll('a[href]')).map(a => a.href);
-                                    }''')
-                                    for link in links:
-                                        absolute_url = urllib.parse.urljoin(url, link)
-                                        if (absolute_url not in visited_urls and 
-                                            absolute_url not in [u[2] for u in to_visit] and 
-                                            absolute_url.startswith(('http://', 'https://'))):
-                                            parsed_url = urllib.parse.urlparse(absolute_url)
-                                            if domain_restriction and parsed_url.netloc != base_domain:
-                                                continue
-                                            new_links.append((absolute_url, depth + 1))
-                            except Exception as e:
-                                logger.debug(f"Error clicking element {action['selector']} in frame: {e}")
-                    elif action['type'] == 'scroll':
-                        await frame.evaluate('window.scrollTo(0, document.body.scrollHeight);')
-                        await frame.wait_for_timeout(3000)
-                    elif action['type'] == 'fill' and action['selector'] and action['value']:
-                        input_field = await frame.query_selector(action['selector'])
-                        if input_field and await input_field.is_visible():
-                            await frame.fill(action['selector'], action['value'])
-                            await frame.wait_for_timeout(2000)
-                            await frame.keyboard.press("Enter")
+                    try:
+                        if action['type'] == 'click' and action['selector']:
+                            elements = await frame.query_selector_all(action['selector'])
+                            for element in elements[:3]:
+                                try:
+                                    is_visible = await element.is_visible()
+                                    if is_visible:
+                                        await element.click(timeout=5000)
+                                        await frame.wait_for_timeout(3000)
+                                        links = await frame.evaluate('''() => {
+                                            return Array.from(document.querySelectorAll('a[href]')).map(a => a.href);
+                                        }''')
+                                        for link in links:
+                                            absolute_url = urllib.parse.urljoin(url, link)
+                                            if (absolute_url not in visited_urls and 
+                                                absolute_url not in [u[2] for u in to_visit] and 
+                                                absolute_url.startswith(('http://', 'https://'))):
+                                                parsed_url = urllib.parse.urlparse(absolute_url)
+                                                if domain_restriction and parsed_url.netloc != base_domain:
+                                                    logger.debug(f"Skipping external URL {absolute_url} due to domain restriction")
+                                                    continue
+                                                if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', absolute_url, re.IGNORECASE):
+                                                    logger.debug(f"Skipping non-textual URL {absolute_url}")
+                                                    continue
+                                                if 'modal' in absolute_url.lower():
+                                                    logger.debug(f"Skipping modal URL {absolute_url}")
+                                                    continue
+                                                new_links.append((absolute_url, depth + 1))
+                                                logger.info(f"New link found via click: {absolute_url}, depth={depth + 1} in frame: {frame_name}")
+                                except Exception as e:
+                                    logger.debug(f"Error clicking element {action['selector']} in frame: {e}")
+                        elif action['type'] == 'scroll':
+                            await frame.evaluate('window.scrollTo(0, document.body.scrollHeight);')
                             await frame.wait_for_timeout(3000)
+                        elif action['type'] == 'fill' and action['selector'] and action['value']:
+                            input_field = await frame.query_selector(action['selector'])
+                            if input_field and await input_field.is_visible():
+                                await frame.fill(action['selector'], action['value'])
+                                await frame.wait_for_timeout(2000)
+                                await frame.keyboard.press("Enter")
+                                await frame.wait_for_timeout(3000)
+                                logger.debug(f"Filled input {action['selector']} with value: {action['value']} in frame: {frame_name}")
+                    except Exception as e:
+                        logger.debug(f"Error performing action {action} in frame: {e}")
             except Exception as e:
                 logger.error(f"Error in Grok API analysis for frame {frame_name}: {str(e)}")
             
-            await frame.wait_for_timeout(3000)
-            
-            try:
-                links = await frame.evaluate('''() => {
-                    const urls = [];
-                    document.querySelectorAll('a[href], [href], button, [role="link"], [onclick], [data-href], [data-nav], [data-url], [data-link], [ng-href], [data-ng-href], [data-action], [data-target], meta[content][http-equiv="refresh"], link[rel="sitemap"]').forEach(el => {
-                        let url = el.href || el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-nav') || el.getAttribute('data-url') || el.getAttribute('data-link') || el.getAttribute('ng-href') || el.getAttribute('data-ng-href') || el.getAttribute('data-action') || el.getAttribute('data-target');
-                        if (!url && el.getAttribute('onclick')) {
-                            const match = el.getAttribute('onclick').match(/(?:location\.href|window\.open|navigateTo|window\.location\.assign|window\.location\.replace)\(['"]([^'"]+)['"]/);
-                            if (match) url = match[1];
-                        }
-                        if (!url && el.tagName === 'META' && el.getAttribute('http-equiv') === 'refresh') {
-                            const content = el.getAttribute('content');
-                            const match = content.match(/url=(.+)$/i);
-                            if (match) url = match[1];
-                        }
-                        if (!url && el.tagName === 'LINK' && el.getAttribute('rel') === 'sitemap') {
-                            url = el.href;
-                        }
-                        if (url) urls.push(url);
-                    });
-                    const scripts = document.querySelectorAll('script');
-                    scripts.forEach(script => {
-                        const text = script.textContent || script.src;
-                        const matches = text.match(/(?:location\.href|window\.location|navigateTo|open)\(['"]([^'"]+)['"]/g);
-                        if (matches) {
-                            matches.forEach(match => {
-                                const urlMatch = match.match(/['"]([^'"]+)['"]/);
-                                if (urlMatch) urls.push(urlMatch[1]);
-                            });
-                        }
-                    });
-                    return [...new Set(urls)];
-                }''')
-                for link in links:
-                    absolute_url = urllib.parse.urljoin(url, link)
-                    if (absolute_url not in visited_urls and 
-                        absolute_url not in [u[2] for u in to_visit] and 
-                        absolute_url.startswith(('http://', 'https://'))):
-                        parsed_url = urllib.parse.urlparse(absolute_url)
-                        if domain_restriction and parsed_url.netloc != base_domain:
-                            continue
-                        new_links.append((absolute_url, depth + 1))
-            except Exception as e:
-                logger.error(f"Error extracting links in frame {frame_name}: {str(e)}")
+            # Extended wait for dynamic content
+            await frame.wait_for_timeout(5000)
     except Exception as e:
         logger.error(f"Error in FindLinks for {url}: {str(e)}")
     
+    logger.info(f"Returning {len(new_links)} new links from FindLinks for {url}")
     return new_links
 
 async def ScanLinks(browser, links, max_results, items_crawled, stop_event):
@@ -452,6 +468,7 @@ async def ScanLinks(browser, links, max_results, items_crawled, stop_event):
         except Exception as e:
             logger.error(f"Error creating page for {url}: {str(e)}")
     
+    logger.info(f"Scanned {len(scanned_links)} links with meaningful content")
     return scanned_links
 
 async def CrawlLinks(scanned_links, library_id, max_results, items_crawled, stop_event):
@@ -468,6 +485,7 @@ async def CrawlLinks(scanned_links, library_id, max_results, items_crawled, stop
                 logger.info(f"Crawled and embedded {url}, items_crawled={items_crawled}")
         except Exception as e:
             logger.error(f"Error crawling {url}: {str(e)}")
+    logger.info(f"Crawled {len(crawled_data)} items")
     return crawled_data, items_crawled
 
 async def crawl_website(start_url, user_id, library_id, domain_restriction, crawl_depth, links_to_batch, max_results):
@@ -594,6 +612,8 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                         'items_crawled': items_crawled,
                         'status': 'running'
                     }, namespace='/crawl')
+                else:
+                    logger.warning(f"Failed to load starting URL {start_url}: Status {response.status if response else 'None'}")
                 await page.close()
             except Exception as e:
                 logger.error(f"Error processing starting URL {start_url}: {str(e)}")
@@ -605,15 +625,20 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                     try:
                         priority, depth, url = heappop(to_visit)
                         if depth > crawl_depth:
+                            logger.debug(f"Skipping URL {url} due to depth limit: {depth} > {crawl_depth}")
                             continue
                         if url in visited_urls or not url.startswith(('http://', 'https://')):
+                            logger.debug(f"Skipping invalid or visited URL: {url}")
                             continue
                         if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
+                            logger.debug(f"Skipping non-textual URL: {url}")
                             continue
                         if 'modal' in url.lower():
+                            logger.debug(f"Skipping modal URL: {url}")
                             continue
                         parsed_url = urllib.parse.urlparse(url)
                         if domain_restriction and parsed_url.netloc != base_domain:
+                            logger.debug(f"Skipping external URL {url} due to domain restriction")
                             continue
                         
                         batch_links.append((url, depth))
@@ -622,6 +647,7 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                         logger.error(f"Error selecting link: {str(e)}")
                         continue
                 
+                logger.info(f"Collected {len(batch_links)} links for batch processing")
                 if not batch_links or stop_event.is_set():
                     break
                 
