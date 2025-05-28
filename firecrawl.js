@@ -1,4 +1,4 @@
-import('firecrawl').then(({ FirecrawlApp }) => {
+import('@mendable/firecrawl-js').then(({ FirecrawlApp }) => {
     console.log('Firecrawl module imported successfully');
     const app = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY });
     console.log('FirecrawlApp initialized with API key');
