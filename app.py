@@ -76,7 +76,7 @@ async def load_embedding_model():
                 os.environ["HF_HUB_DISABLE_XET"] = "1"
                 tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
                 model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
-                logger.info("Fallback: all-MiniLM-L6-v2 model loaded without hf_xet.")
+                logger.info("Fallback: all-MiniLM-L6-v2 model loaded without hw_xet.")
             except Exception as e2:
                 logger.error(f"Fallback failed: {str(e2)}\n{traceback.format_exc()}")
                 raise
@@ -683,7 +683,7 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
 
 @app.route('/stop_crawl', methods=['POST'])
 @login_required
-def stop_crawl():
+async def stop_crawl():
     global crawl_state, stop_event
     try:
         if not current_user.is_authenticated:
