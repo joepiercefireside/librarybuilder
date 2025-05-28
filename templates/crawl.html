@@ -11,8 +11,27 @@
         let pollInterval = null;
         let progressInterval = null;
 
+        function validateForm() {
+            const linksToBatch = parseInt(document.getElementById('links-to-batch').value);
+            const maxResults = parseInt(document.getElementById('max-results').value);
+            if (isNaN(linksToBatch) || linksToBatch < 1) {
+                alert('Links to Batch must be a positive number.');
+                return false;
+            }
+            if (isNaN(maxResults) || maxResults < 1) {
+                alert('Max Number of Results must be a positive number.');
+                return false;
+            }
+            if (linksToBatch > maxResults) {
+                alert('Links to Batch must be less than or equal to Max Number of Results.');
+                return false;
+            }
+            return true;
+        }
+
         function startCrawl() {
             if (crawlInProgress) return;
+            if (!validateForm()) return;
             crawlInProgress = true;
             const progressDiv = document.getElementById('progress');
             const currentUrlSpan = document.getElementById('current-url');
@@ -126,6 +145,16 @@
             .then(data => {
                 if (data.status === 'success') {
                     alert(data.message);
+                    document.getElementById('progress').innerHTML = `
+                        <p><strong>Links Found:</strong> 0</p>
+                        <p><strong>Links Scanned:</strong> 0</p>
+                        <p><strong>Pages Crawled:</strong> 0</p>
+                        <p><strong>Status:</strong> stopped</p>
+                    `;
+                    document.getElementById('current-url').textContent = '';
+                    crawlInProgress = false;
+                    document.querySelector('button[onclick="startCrawl()"]').disabled = false;
+                    document.getElementById('stop-crawl').style.display = 'none';
                 } else {
                     alert('Error stopping crawl: ' + data.message);
                 }
@@ -283,14 +312,12 @@
                         </select>
                     </div>
                     <div class="mb-3">
+                        <label for="links-to-batch" class="form-label">Links to Batch</label>
+                        <input type="number" class="form-control" id="links-to-batch" name="links_to_batch" min="1" required>
+                    </div>
+                    <div class="mb-3">
                         <label for="max-results" class="form-label">Max Number of Results</label>
-                        <select class="form-select" id="max-results" name="max_results" required>
-                            <option value="10">10</option>
-                            <option value="25">25</option>
-                            <option value="50">50</option>
-                            <option value="100">100</option>
-                            <option value="200">200</option>
-                        </select>
+                        <input type="number" class="form-control" id="max-results" name="max_results" min="1" required>
                     </div>
                     <button type="button" class="btn btn-primary" onclick="startCrawl()">Start Crawl</button>
                     <button type="button" class="btn btn-danger" id="stop-crawl" style="display: none;" onclick="stopCrawl()">Stop Crawl</button>
