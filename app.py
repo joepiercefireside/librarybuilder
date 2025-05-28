@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, session
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_socketio import SocketIO, emit
 import psycopg2
 from psycopg2.extras import execute_values
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -30,6 +31,7 @@ from heapq import heappush, heappop
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key')
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
+socketio = SocketIO(app, async_mode='gevent')
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
@@ -256,7 +258,6 @@ async def crawl_website(start_url, user_id, library_id):
         return 1
     
     add_to_visit(start_url, get_url_priority(start_url))
-    base_domain = urllib.parse.urlparse(start_url).netloc
     links_found = 1
     links_scanned = 0
     items_crawled = 0
@@ -290,7 +291,7 @@ async def crawl_website(start_url, user_id, library_id):
                 for item in firecrawl_data:
                     if 'url' in item and 'content' in item:
                         absolute_url = normalize_url(item['url'])
-                        if absolute_url and absolute_url not in visited_urls and urllib.parse.urlparse(absolute_url).netloc == base_domain:
+                        if absolute_url and absolute_url not in visited_urls:
                             add_to_visit(absolute_url, get_url_priority(absolute_url))
                             links_found += 1
                             cleaned_content = clean_content(item['content'])
@@ -346,6 +347,9 @@ async def crawl_website(start_url, user_id, library_id):
                     links_scanned += 1
                     logger.info(f"Scanning URL: {url} (priority: {priority}, links_found={links_found}, links_scanned={links_scanned})")
                     
+                    # Emit WebSocket update for links_scanned
+                    socketio.emit('crawl_update', {'links_scanned': links_scanned}, namespace='/crawl')
+                    
                     c.execute("UPDATE progress SET current_url = ?, links_found = ?, links_scanned = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                               (url, links_found, links_scanned, str(user_id), start_url, library_id))
                     conn.commit()
@@ -394,8 +398,8 @@ async def crawl_website(start_url, user_id, library_id):
                     except Exception as e:
                         logger.error(f"Error closing modals on main page: {str(e)}")
                     
-                    # Process frames
-                    frames = [f for f in page.frames if f.url != 'about:blank' and f.url and not re.search(r'(ads|analytics|doubleclick|googlesyndication)', f.url, re.IGNORECASE)]
+                    # Process frames (limit to 5 to conserve memory)
+                    frames = [f for f in page.frames if f.url != 'about:blank' and f.url and not re.search(r'(ads|analytics|doubleclick|googlesyndication)', f.url, re.IGNORECASE)][:5]
                     logger.info(f"Found {len(frames)} valid frames on {url}")
                     frame_data = []
                     for frame in [page.main_frame] + frames:  # Prioritize main frame
@@ -447,15 +451,25 @@ async def crawl_website(start_url, user_id, library_id):
                                                 continue
                                             aria_expanded = await element.get_attribute('aria-expanded')
                                             if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag']:
-                                                for _ in range(3):  # Retry up to 3 times
+                                                for _ in range(2):  # Retry up to 2 times
                                                     try:
                                                         # Try JavaScript click as fallback
                                                         await frame.evaluate('''(element) => element.click()''', element)
-                                                        await frame.wait_for_timeout(5000)
+                                                        await frame.wait_for_timeout(3000)
                                                         # Wait for collapsible body
-                                                        await frame.wait_for_selector('.collapsible-body', state='visible', timeout=10000)
+                                                        await frame.wait_for_selector('.collapsible-body', state='visible', timeout=5000)
                                                         click_count += 1
                                                         logger.info(f"Clicked collapsible element #{click_count} with selector: {selector} in frame: {frame_name}")
+                                                        # Extract links from collapsible body
+                                                        new_links = await frame.evaluate('''() => {
+                                                            return Array.from(document.querySelectorAll('.collapsible-body a[href]')).map(a => a.href);
+                                                        }''')
+                                                        for link in new_links:
+                                                            absolute_url = urllib.parse.urljoin(url, link)
+                                                            if absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and absolute_url.startswith(('http://', 'https://')):
+                                                                add_to_visit(absolute_url, get_url_priority(absolute_url))
+                                                                links_found += 1
+                                                                logger.info(f"New link found in collapsible body: {absolute_url}, links_found={links_found} in frame: {frame_name}")
                                                         break
                                                     except Exception as e:
                                                         logger.debug(f"Retry clicking element {selector} in frame: {e}")
@@ -521,8 +535,7 @@ async def crawl_website(start_url, user_id, library_id):
                                                         }''')
                                                         for link in new_links:
                                                             absolute_url = urllib.parse.urljoin(url, link)
-                                                            parsed_url = urllib.parse.urlparse(absolute_url)
-                                                            if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and parsed_url.scheme in ('http', 'https'):
+                                                            if absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and absolute_url.startswith(('http://', 'https://')):
                                                                 add_to_visit(absolute_url, get_url_priority(absolute_url))
                                                                 links_found += 1
                                                                 logger.info(f"New link found via click: {absolute_url}, links_found={links_found} in frame: {frame_name}")
@@ -545,7 +558,7 @@ async def crawl_website(start_url, user_id, library_id):
                                 logger.error(f"Error in Grok API analysis for frame {frame_name}: {str(e)}")
                             
                             # Final wait for dynamic content
-                            await frame.wait_for_timeout(5000)
+                            await frame.wait_for_timeout(3000)
                             
                             # Collect content and links
                             content_type = response.headers.get('content-type', '').lower()
@@ -600,8 +613,7 @@ async def crawl_website(start_url, user_id, library_id):
                                 logger.debug(f"Found {len(links)} links in frame {frame_name} on {url}")
                                 for link in links:
                                     absolute_url = urllib.parse.urljoin(url, link)
-                                    parsed_url = urllib.parse.urlparse(absolute_url)
-                                    if parsed_url.netloc == base_domain and absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and parsed_url.scheme in ('http', 'https'):
+                                    if absolute_url not in visited_urls and absolute_url not in [u[1] for u in to_visit] and absolute_url.startswith(('http://', 'https://')):
                                         add_to_visit(absolute_url, get_url_priority(absolute_url))
                                         links_found += 1
                                         logger.info(f"New link found: {absolute_url}, links_found={links_found} in frame: {frame_name}")
@@ -1169,4 +1181,4 @@ def health():
     return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    socketio.run(app, debug=True)

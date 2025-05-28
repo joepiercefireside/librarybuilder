@@ -20,3 +20,4 @@ aiohttp==3.9.5
 httpx==0.27.0
 pdfplumber==0.10.2
 werkzeug==2.3.6
+flask-socketio==5.3.6
