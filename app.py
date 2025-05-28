@@ -14,6 +14,7 @@ import urllib.parse
 import sqlite3
 import json
 import psutil
+import subprocess
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from bs4 import BeautifulSoup
 import traceback
@@ -278,6 +279,39 @@ async def crawl_website(start_url, user_id, library_id):
         conn.close()
         return crawled_data
     
+    # Try Firecrawl first
+    try:
+        logger.info(f"Attempting Firecrawl for {start_url}")
+        result = subprocess.run(['node', 'firecrawl.js', start_url], capture_output=True, text=True, timeout=300)
+        if result.returncode == 0:
+            try:
+                firecrawl_data = json.loads(result.stdout)
+                logger.info(f"Firecrawl succeeded, found {len(firecrawl_data)} items")
+                for item in firecrawl_data:
+                    if 'url' in item and 'content' in item:
+                        absolute_url = normalize_url(item['url'])
+                        if absolute_url and absolute_url not in visited_urls and urllib.parse.urlparse(absolute_url).netloc == base_domain:
+                            add_to_visit(absolute_url, get_url_priority(absolute_url))
+                            links_found += 1
+                            cleaned_content = clean_content(item['content'])
+                            if cleaned_content and len(cleaned_content.strip()) >= 100:
+                                embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
+                                if embedding is not None:
+                                    crawled_data.append((absolute_url, cleaned_content, embedding.tolist(), None, library_id))
+                                    items_crawled += 1
+                                    logger.info(f"Added Firecrawl item: {absolute_url}, items_crawled={items_crawled}")
+                c.execute("UPDATE progress SET links_found = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                          (links_found, items_crawled, "running", str(user_id), start_url, library_id))
+                conn.commit()
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse Firecrawl output: {str(e)}, output: {result.stdout}")
+            except Exception as e:
+                logger.error(f"Error processing Firecrawl data: {str(e)}")
+        else:
+            logger.error(f"Firecrawl failed with exit code {result.returncode}: {result.stderr}")
+    except Exception as e:
+        logger.error(f"Firecrawl attempt failed: {str(e)}, falling back to Playwright")
+    
     browser = None
     try:
         async with async_playwright() as p:
@@ -338,8 +372,8 @@ async def crawl_website(start_url, user_id, library_id):
                     
                     # Wait for AngularJS and Materialize CSS stabilization
                     try:
-                        await page.wait_for_function('window.angular && window.angular.element(document).injector().get("$http").pendingRequests.length === 0', timeout=15000)
-                        await page.wait_for_function('typeof $ !== "undefined" && $(".collapsible").collapsible', timeout=15000)
+                        await page.wait_for_function('window.angular && window.angular.element(document).injector().get("$http").pendingRequests.length === 0', timeout=20000)
+                        await page.wait_for_function('typeof $ !== "undefined" && $(".collapsible").collapsible', timeout=20000)
                         await page.wait_for_timeout(5000)  # Extra buffer for animations
                         logger.debug("AngularJS and Materialize CSS content stabilized")
                     except Exception as e:
