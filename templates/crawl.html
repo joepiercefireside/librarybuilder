@@ -7,6 +7,30 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f4; }
+        header { background-color: #00689B; padding: 10px 0; }
+        nav { display: flex; justify-content: space-between; align-items: center; max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+        nav .logo img { height: 50px; }
+        nav ul { list-style: none; display: flex; margin: 0; padding: 0; }
+        nav ul li { margin-left: 20px; }
+        nav ul li a { color: #4B9FC6; text-decoration: none; font-weight: bold; }
+        nav ul li a:hover { color: #F05722; }
+        nav ul li a.active { color: #004d73; }
+        main { max-width: 800px; margin: 20px auto; padding: 20px; background: white; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #00689B; }
+        form { display: flex; flex-direction: column; gap: 10px; }
+        label { font-weight: bold; }
+        input, select, button { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; }
+        button { background-color: #00689B; color: white; border: none; cursor: pointer; }
+        button:hover { background-color: #F05722; }
+        .alert { padding: 10px; margin-bottom: 10px; border-radius: 4px; }
+        .alert-error { background-color: #f8d7da; color: #721c24; }
+        .alert-success { background-color: #d4edda; color: #155724; }
+        .alert-info { background-color: #d1ecf1; color: #0c5460; }
+        #crawl-status { margin-top: 20px; }
+        #crawl-status p { margin: 5px 0; }
+    </style>
 </head>
 <body>
     <header>
@@ -59,7 +83,7 @@
             const urlInput = document.getElementById('url').value;
             const libraryId = document.getElementById('library_id').value;
             if (urlInput && libraryId) {
-                const socket = io.connect('https://' + document.domain + ':' + location.port + '/crawl');
+                const socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + '/crawl');
                 socket.on('crawl_update', function(data) {
                     document.getElementById('links-scanned').textContent = data.links_scanned;
                 });

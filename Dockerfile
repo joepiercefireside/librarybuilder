@@ -27,6 +27,8 @@ RUN apt-get update && apt-get install -y \
     apt-get install -y nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+RUN python -m playwright install chromium
+
 COPY package.json .
 RUN npm install
 
