@@ -6,6 +6,10 @@ import('@mendable/firecrawl-js').then(({ FirecrawlApp }) => {
     async function crawl(url) {
         try {
             console.log(`Starting crawl for URL: ${url}`);
+            // Temporarily disabled due to parsing issues
+            console.log('Firecrawl execution disabled');
+            return;
+            /*
             const results = await app.crawlUrl(url, {
                 actions: [
                     { type: 'click', selector: '.collapsible-header' },
@@ -15,6 +19,7 @@ import('@mendable/firecrawl-js').then(({ FirecrawlApp }) => {
             });
             console.log('Crawl completed, results:', JSON.stringify(results));
             console.log(JSON.stringify(results));
+            */
         } catch (error) {
             console.error('Crawl error:', error.message, error.stack);
         }

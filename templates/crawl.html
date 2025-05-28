@@ -9,6 +9,7 @@
     <script>
         let crawlInProgress = false;
         let pollInterval = null;
+        let progressInterval = null;
 
         function startCrawl() {
             if (crawlInProgress) return;
@@ -32,7 +33,18 @@
             currentUrlSpan.classList.add('text-primary');
 
             // Initialize Socket.IO
-            const socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + '/crawl');
+            const socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + '/crawl', {
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                reconnectionAttempts: 5,
+                reconnectionDelay: 1000
+            });
+            socket.on('connect', () => {
+                console.log('WebSocket connected');
+            });
+            socket.on('connect_error', (error) => {
+                console.error('WebSocket connection error:', error);
+            });
             socket.on('crawl_update', function(data) {
                 progressDiv.innerHTML = `
                     <p><strong>Links Found:</strong> ${data.links_found}</p>
@@ -42,6 +54,7 @@
                 `;
                 if (data.status === 'complete' || data.status.startsWith('error') || data.status === 'stopped') {
                     clearInterval(pollInterval);
+                    clearInterval(progressInterval);
                     currentUrlSpan.textContent = '';
                     crawlInProgress = false;
                     startButton.disabled = false;
@@ -50,7 +63,35 @@
                 }
             });
 
-            // Poll only for current URL
+            // Fallback polling for progress
+            progressInterval = setInterval(() => {
+                fetch(`/crawl_progress?url=${encodeURIComponent(url)}&library_id=${libraryId}`, { credentials: 'include' })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.status !== 'error') {
+                            progressDiv.innerHTML = `
+                                <p><strong>Links Found:</strong> ${data.links_found}</p>
+                                <p><strong>Links Scanned:</strong> ${data.links_scanned}</p>
+                                <p><strong>Pages Crawled:</strong> ${data.items_crawled}</p>
+                                <p><strong>Status:</strong> ${data.status}</p>
+                            `;
+                        }
+                        if (data.status === 'complete' || data.status === 'error' || data.status === 'stopped') {
+                            clearInterval(pollInterval);
+                            clearInterval(progressInterval);
+                            currentUrlSpan.textContent = '';
+                            crawlInProgress = false;
+                            startButton.disabled = false;
+                            stopButton.style.display = 'none';
+                            socket.disconnect();
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error fetching progress:', error);
+                    });
+            }, 5000);
+
+            // Poll for current URL
             pollInterval = setInterval(() => {
                 fetch(`/current_url?url=${encodeURIComponent(url)}&library_id=${libraryId}`, { credentials: 'include' })
                     .then(response => response.json())

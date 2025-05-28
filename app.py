@@ -295,46 +295,6 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
         }, namespace='/crawl')
         return []
     
-    # Try Firecrawl first
-    try:
-        logger.info(f"Attempting Firecrawl for {start_url}")
-        result = subprocess.run(['node', 'firecrawl.js', start_url], capture_output=True, text=True, timeout=300)
-        if result.returncode == 0 and result.stdout.strip():
-            try:
-                firecrawl_data = json.loads(result.stdout)
-                logger.info(f"Firecrawl succeeded, found {len(firecrawl_data)} items")
-                for item in firecrawl_data:
-                    if 'url' in item and 'content' in item:
-                        absolute_url = normalize_url(item['url'])
-                        if absolute_url and absolute_url not in visited_urls:
-                            parsed_url = urllib.parse.urlparse(absolute_url)
-                            if domain_restriction and parsed_url.netloc != base_domain:
-                                continue
-                            add_to_visit(absolute_url, get_url_priority(absolute_url), 0)
-                            links_found += 1
-                            cleaned_content = clean_content(item['content'])
-                            if cleaned_content and len(cleaned_content.strip()) >= 100 and items_crawled < max_results:
-                                embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
-                                if embedding is not None:
-                                    crawl_state['crawled_data'].append((absolute_url, cleaned_content, embedding.tolist(), None, library_id))
-                                    items_crawled += 1
-                                    logger.info(f"Added Firecrawl item: {absolute_url}, items_crawled={items_crawled}")
-                c.execute("UPDATE progress SET links_found = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                          (links_found, items_crawled, "running", str(user_id), start_url, library_id))
-                conn.commit()
-                socketio.emit('crawl_update', {
-                    'links_found': links_found,
-                    'links_scanned': links_scanned,
-                    'items_crawled': items_crawled,
-                    'status': 'running'
-                }, namespace='/crawl')
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse Firecrawl output: {str(e)}, output: {result.stdout}")
-        else:
-            logger.error(f"Firecrawl failed with exit code {result.returncode}, stdout: {result.stdout}, stderr: {result.stderr}")
-    except Exception as e:
-        logger.error(f"Firecrawl attempt failed: {str(e)}, falling back to Playwright")
-    
     browser = None
     try:
         async with async_playwright() as p:
@@ -463,7 +423,41 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                             except Exception as e:
                                 logger.debug(f"Error scrolling in frame {frame_name}: {e}")
                             
-                            # Expand all collapsible sections
+                            # Evaluate content immediately
+                            content_type = response.headers.get('content-type', '').lower()
+                            cleaned_content = None
+                            if 'text/html' in content_type:
+                                try:
+                                    content = await frame.content()
+                                    cleaned_content = clean_content(content)
+                                    if cleaned_content and len(cleaned_content.strip()) >= 100 and items_crawled < max_results:
+                                        embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
+                                        if embedding is not None:
+                                            crawl_state['crawled_data'].append((url, cleaned_content, embedding.tolist(), None, library_id))
+                                            items_crawled += 1
+                                            logger.info(f"Content found in frame {frame_name} for {url}, items_crawled={items_crawled}")
+                                except Exception as e:
+                                    logger.error(f"Error collecting content in frame {frame_name}: {str(e)}")
+                            
+                            # Process PDF content
+                            if 'application/pdf' in content_type and items_crawled < max_results:
+                                try:
+                                    cleaned_content = await extract_pdf_text(url)
+                                    if cleaned_content and len(cleaned_content.strip()) >= 100:
+                                        embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
+                                        if embedding is not None:
+                                            crawl_state['crawled_data'].append((url, cleaned_content, embedding.tolist(), None, library_id))
+                                            items_crawled += 1
+                                            logger.info(f"Content found in PDF for {url}, items_crawled={items_crawled}")
+                                except Exception as e:
+                                    logger.error(f"Error processing PDF at {url}: {str(e)}")
+                            
+                            # Stop if max_results reached
+                            if items_crawled >= max_results:
+                                logger.info(f"Reached max_results={max_results}, stopping crawl")
+                                break
+                            
+                            # Expand collapsible sections for new links
                             try:
                                 accordion_selectors = [
                                     '.collapsible-header', '.pii-tag.country-tag',  # High priority
@@ -494,14 +488,11 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                                             if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag']:
                                                 for _ in range(2):  # Retry up to 2 times
                                                     try:
-                                                        # Try JavaScript click as fallback
                                                         await frame.evaluate('''(element) => element.click()''', element)
                                                         await frame.wait_for_timeout(3000)
-                                                        # Wait for collapsible body
                                                         await frame.wait_for_selector('.collapsible-body', state='visible', timeout=5000)
                                                         click_count += 1
                                                         logger.info(f"Clicked collapsible element #{click_count} with selector: {selector} in frame: {frame_name}")
-                                                        # Extract links from collapsible body
                                                         new_links = await frame.evaluate('''() => {
                                                             return Array.from(document.querySelectorAll('.collapsible-body a[href]')).map(a => a.href);
                                                         }''')
@@ -520,38 +511,7 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                             except Exception as e:
                                 logger.error(f"Error during collapsible section expansion in frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
                             
-                            # Simulate directory interactions (fallback)
-                            try:
-                                search_inputs = await frame.query_selector_all('input[type="search"], input#search, input[name*="search"]')
-                                if search_inputs:
-                                    for input_field in search_inputs[:1]:
-                                        is_visible = await input_field.is_visible()
-                                        input_id = await input_field.get_attribute('id') or 'unknown'
-                                        if is_visible and 'nav' not in input_id.lower():
-                                            await input_field.fill("query")
-                                            await frame.wait_for_timeout(2000)
-                                            await frame.keyboard.press("Enter")
-                                            await frame.wait_for_timeout(3000)
-                                            logger.debug(f"Performed search interaction in frame: {frame_name}")
-                                        else:
-                                            logger.debug(f"Skipping irrelevant or invisible search input {input_id} in frame: {frame_name}")
-                                
-                                filter_selectors = ['.filter', '.tab', '[role="tab"]', '[role="button"]', 'button', 'select']
-                                for selector in filter_selectors:
-                                    elements = await frame.query_selector_all(selector)
-                                    for element in elements[:3]:
-                                        try:
-                                            is_visible = await element.is_visible()
-                                            if is_visible:
-                                                await element.click(timeout=5000)
-                                                await frame.wait_for_timeout(3000)
-                                                logger.debug(f"Clicked element with selector: {selector} in frame: {frame_name}")
-                                        except Exception as e:
-                                            logger.debug(f"Error clicking {selector} in frame: {e}")
-                            except Exception as e:
-                                logger.error(f"Error during directory interactions in frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
-                            
-                            # Grok API analysis
+                            # Grok API analysis for additional links
                             try:
                                 actions = await analyze_page_for_links(frame)
                                 if not actions:
@@ -601,24 +561,6 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                             # Final wait for dynamic content
                             await frame.wait_for_timeout(3000)
                             
-                            # Collect content and links
-                            content_type = response.headers.get('content-type', '').lower()
-                            cleaned_content = None
-                            if 'text/html' in content_type:
-                                try:
-                                    content = await frame.content()
-                                    cleaned_content = clean_content(content)
-                                    if not cleaned_content or len(cleaned_content.strip()) < 100:
-                                        logger.warning(f"No valid textual content found in frame {frame_name} for {url}")
-                                    else:
-                                        embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
-                                        if embedding is not None:
-                                            crawl_state['crawled_data'].append((url, cleaned_content, embedding.tolist(), None, library_id))
-                                            items_crawled += 1
-                                            logger.info(f"Content found in frame {frame_name} for {url}")
-                                except Exception as e:
-                                    logger.error(f"Error collecting content in frame {frame_name}: {str(e)}")
-                            
                             # Enhanced link extraction
                             try:
                                 links = await frame.evaluate('''() => {
@@ -664,26 +606,9 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                         except Exception as e:
                             logger.error(f"Error processing frame {frame_name}: {str(e)}\n{traceback.format_exc()}")
                     
-                    # Process PDF content
-                    if 'application/pdf' in content_type:
-                        try:
-                            cleaned_content = await extract_pdf_text(url)
-                            if not cleaned_content or len(cleaned_content.strip()) < 100:
-                                logger.warning(f"No valid textual content in PDF at {url}")
-                            else:
-                                embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
-                                if embedding is not None:
-                                    crawl_state['crawled_data'].append((url, cleaned_content, embedding.tolist(), None, library_id))
-                                    items_crawled += 1
-                                    logger.info(f"Content found in PDF for {url}")
-                        except Exception as e:
-                            logger.error(f"Error processing PDF at {url}: {str(e)}")
-                    
-                    # Aggregate frame data
-                    for data in frame_data:
-                        if items_crawled < max_results:
-                            items_crawled += 1
-                            crawl_state['crawled_data'].append(data)
+                    if items_crawled >= max_results:
+                        logger.info(f"Reached max_results={max_results}, stopping crawl")
+                        break
                     
                     c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                               (links_found, links_scanned, items_crawled, "running", str(user_id), start_url, library_id))
@@ -956,7 +881,7 @@ def delete_library(library_id):
         if not current_user.is_authenticated:
             logger.error("Unauthenticated user accessing delete_library endpoint")
             flash('Please log in to delete libraries.', 'error')
-            return redirect(url_for('login'))
+            return redirect(url_for('libraries'))
         
         conn = get_db_connection()
         cur = conn.cursor()
