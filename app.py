@@ -284,7 +284,7 @@ async def crawl_website(start_url, user_id, library_id):
     try:
         logger.info(f"Attempting Firecrawl for {start_url}")
         result = subprocess.run(['node', 'firecrawl.js', start_url], capture_output=True, text=True, timeout=300)
-        if result.returncode == 0:
+        if result.returncode == 0 and result.stdout.strip():
             try:
                 firecrawl_data = json.loads(result.stdout)
                 logger.info(f"Firecrawl succeeded, found {len(firecrawl_data)} items")
@@ -306,10 +306,8 @@ async def crawl_website(start_url, user_id, library_id):
                 conn.commit()
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse Firecrawl output: {str(e)}, output: {result.stdout}")
-            except Exception as e:
-                logger.error(f"Error processing Firecrawl data: {str(e)}")
         else:
-            logger.error(f"Firecrawl failed with exit code {result.returncode}: {result.stderr}")
+            logger.error(f"Firecrawl failed with exit code {result.returncode}, stdout: {result.stdout}, stderr: {result.stderr}")
     except Exception as e:
         logger.error(f"Firecrawl attempt failed: {str(e)}, falling back to Playwright")
     
