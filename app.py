@@ -308,7 +308,7 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                 '.directory-item, .collapse-header, .panel-heading',
             ]
             click_count = 0
-            max_clicks = 100  # Reduced to prevent infinite loops
+            max_clicks = 100
             for selector in accordion_selectors:
                 if click_count >= max_clicks or stop_event.is_set():
                     logger.warning(f"Reached max click limit ({max_clicks}) or stop event in frame: {frame_name}")
@@ -437,6 +437,7 @@ async def ScanLinks(browser, links, max_results, items_crawled, stop_event):
     scanned_links = []
     for url, depth in links:
         if items_crawled >= max_results or stop_event.is_set():
+            logger.info("Stopping ScanLinks due to max_results or stop_event")
             break
         try:
             page = await browser.new_page()
@@ -476,6 +477,7 @@ async def CrawlLinks(scanned_links, library_id, max_results, items_crawled, stop
     embedding_tokenizer, embedding_model = await load_embedding_model()
     for url, cleaned_content, depth in scanned_links:
         if items_crawled >= max_results or stop_event.is_set():
+            logger.info("Stopping CrawlLinks due to max_results or stop_event")
             break
         try:
             embedding = await generate_embedding(cleaned_content, embedding_tokenizer, embedding_model)
@@ -666,7 +668,7 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                     'links_scanned': links_scanned,
                     'items_crawled': items_crawled,
                     'status': 'running'
-                }, namespace='/crawl')
+                    }, namespace='/crawl')
                 
                 if items_crawled >= max_results or stop_event.is_set():
                     break
@@ -686,6 +688,7 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
         c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                   (f"error: {str(e)}", "", str(user_id), start_url, library_id))
         conn.commit()
+        conn.close()
         socketio.emit('crawl_update', {
             'links_found': links_found,
             'links_scanned': links_scanned,
@@ -724,21 +727,29 @@ async def stop_crawl():
             logger.error("User not authorized to stop this crawl")
             return jsonify({'status': 'error', 'message': 'Not authorized to stop this crawl'}), 403
         
-        logger.info(f"Stopping crawl for user {current_user.id}, library {crawl_state['library_id']}")
-        commit = request.form.get('commit', 'false').lower() == 'true'
+        action = request.form.get('action', 'cancel')
+        logger.info(f"Stop crawl requested by user {current_user.id} for library {crawl_state['library_id']}, action={action}")
+
+        if action == 'cancel':
+            logger.info("Cancel requested, continuing crawl")
+            return jsonify({'status': 'success', 'message': 'Crawl continues'})
+
+        logger.info(f"Stopping crawl with action: {action}")
         stop_event.set()
         crawl_state['running'] = False
         
-        # Close Playwright browser
+        # Close Playwright browser with timeout
         if crawl_state['browser']:
             try:
-                await crawl_state['browser'].close()
+                await asyncio.wait_for(crawl_state['browser'].close(), timeout=10.0)
                 logger.info("Playwright browser closed via stop_crawl")
                 crawl_state['browser'] = None
+            except asyncio.TimeoutError:
+                logger.error("Timeout closing Playwright browser")
             except Exception as e:
                 logger.error(f"Error closing browser in stop_crawl: {str(e)}")
         
-        if commit and crawl_state['crawled_data']:
+        if action == 'commit' and crawl_state['crawled_data']:
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
@@ -756,6 +767,10 @@ async def stop_crawl():
             except Exception as e:
                 logger.error(f"Error committing crawl data: {str(e)}")
                 flash(f"Error storing crawl data: {str(e)}", 'error')
+        elif action == 'discard':
+            logger.info("Discarding crawled data")
+            crawl_state['crawled_data'] = []
+            flash("Crawl stopped and data discarded.", 'info')
         
         conn = sqlite3.connect('progress.db')
         c = conn.cursor()
@@ -772,7 +787,7 @@ async def stop_crawl():
         }, namespace='/crawl')
         logger.info("Sent stopped status via Socket.IO")
         
-        return jsonify({'status': 'success', 'message': 'Crawl stopped' + (' and data committed' if commit else '')})
+        return jsonify({'status': 'success', 'message': f"Crawl stopped{' and data committed' if action == 'commit' else ' and data discarded' if action == 'discard' else ''}"})
     except Exception as e:
         logger.error(f"Error stopping crawl: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
