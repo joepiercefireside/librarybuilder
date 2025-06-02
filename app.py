@@ -240,7 +240,7 @@ async def evaluate_content_relevance(content, relevance_prompt):
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         prompt = f"""
         {relevance_prompt}
-        Given the following content, determine its relevance to the specified criteria. Return a relevance score between 0 and 1, where 1 is highly relevant and 0 is not relevant at all.
+        Given the following content, determine its relevance to the specified criteria. Return only a numeric relevance score between 0.0 and 1.0, where 1.0 is highly relevant and 0.0 is not relevant. Do not include any text, explanations, or formatting, just the number.
         """
         completion = client.chat.completions.create(
             model="grok-3-latest",
@@ -248,14 +248,17 @@ async def evaluate_content_relevance(content, relevance_prompt):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": f"Content: {content[:2000]}"}
             ],
-            max_tokens=100
+            max_tokens=10
         )
-        response = completion.choices[0].message.content
-        try:
-            score = float(response.strip())
+        response = completion.choices[0].message.content.strip()
+        logger.debug(f"Grok API relevance response: {response}")
+        # Extract numeric score using regex
+        match = re.search(r'(\d*\.\d+)', response)
+        if match:
+            score = float(match.group(0))
             return max(0.0, min(1.0, score))
-        except ValueError:
-            logger.error(f"Invalid relevance score from Grok API: {response}")
+        else:
+            logger.error(f"Invalid relevance score format from Grok API: {response}")
             return 0.0
     except Exception as e:
         logger.error(f"Error evaluating content relevance: {str(e)}\n{traceback.format_exc()}")
@@ -499,7 +502,7 @@ async def ScanLinks(browser, links, max_results, items_crawled, stop_event, rele
                 
                 if cleaned_content and len(cleaned_content.strip()) >= 100:
                     relevance_score = await evaluate_content_relevance(cleaned_content, relevance_prompt)
-                    if relevance_score >= 0.5:  # Adjustable threshold
+                    if relevance_score >= 0.3:  # Lowered threshold for testing
                         scanned_links.append((url, cleaned_content, depth))
                         logger.info(f"Meaningful and relevant content found for {url}, relevance_score={relevance_score:.2f}")
                     else:
@@ -566,9 +569,15 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
     
     conn = sqlite3.connect('progress.db')
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO progress (user_id, url, library_id, links_found, links_scanned, items_crawled, status, current_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-              (str(user_id), start_url, library_id, links_found, links_scanned, items_crawled, "running", start_url))
-    conn.commit()
+    @tenacity.retry(stop=tenacity.stop_after_attempt(3), wait=tenacity.wait_fixed(1))
+    def update_progress():
+        c.execute("INSERT OR REPLACE INTO progress (user_id, url, library_id, links_found, links_scanned, items_crawled, status, current_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  (str(user_id), start_url, library_id, links_found, links_scanned, items_crawled, "running", start_url))
+        conn.commit()
+    try:
+        update_progress()
+    except Exception as e:
+        logger.error(f"Error updating progress: {str(e)}")
     
     browser = None
     try:
@@ -635,7 +644,7 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                     
                     if cleaned_content and len(cleaned_content.strip()) >= 100 and items_crawled < max_results:
                         relevance_score = await evaluate_content_relevance(cleaned_content, relevance_prompt)
-                        if relevance_score >= 0.5:
+                        if relevance_score >= 0.3:
                             embedding = await generate_embedding(cleaned_content, *await load_embedding_model())
                             if embedding is not None:
                                 crawl_state['crawled_data'].append((start_url, cleaned_content, embedding.tolist(), None, library_id))
@@ -648,9 +657,10 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                     links_found += len(new_links)
                     visited_urls.add(start_url)
                     
-                    c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                              (links_found, links_scanned, items_crawled, "running", start_url, str(user_id), start_url, library_id))
-                    conn.commit()
+                    try:
+                        update_progress()
+                    except Exception as e:
+                        logger.error(f"Error updating progress: {str(e)}")
                     try:
                         socketio.emit('crawl_update', {
                             'links_found': links_found,
@@ -680,10 +690,10 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                             logger.debug(f"Skipping invalid or visited URL: {url}")
                             continue
                         if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
-                            logger.debug(f"Skipping non-textual URL: {url}")
+                            logger.debug(f"Skipping non-textual URL {url}")
                             continue
                         if 'modal' in url.lower() or 'login' in url.lower():
-                            logger.debug(f"Skipping modal or login URL: {url}")
+                            logger.debug(f"Skipping modal or login URL {url}")
                             continue
                         parsed_url = urllib.parse.urlparse(url)
                         if domain_restriction and parsed_url.netloc != base_domain:
@@ -707,9 +717,10 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                 new_crawled_data, items_crawled = await CrawlLinks(scanned_links, library_id, max_results, items_crawled, stop_event)
                 crawl_state['crawled_data'].extend(new_crawled_data)
                 
-                c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                          (links_found, links_scanned, items_crawled, "running", str(user_id), start_url, library_id))
-                conn.commit()
+                try:
+                    update_progress()
+                except Exception as e:
+                    logger.error(f"Error updating progress: {str(e)}")
                 try:
                     socketio.emit('crawl_update', {
                         'links_found': links_found,
