@@ -44,7 +44,7 @@
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
-                    <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
+                    <div class="alert alert-{{ 'success' if category == 'success' else 'info' if category == 'info' else 'danger' }}">{{ message }}</div>
                 {% endfor %}
             {% endif %}
         {% endwith %}
@@ -56,21 +56,24 @@
                         <label for="name" class="form-label">Library Name</label>
                         <input type="text" class="form-control" id="name" name="name" required>
                     </div>
+                    <div class="mb-3">
+                        <label for="prompt" class="form-label">Relevance Prompt</label>
+                        <textarea class="form-control" id="prompt" name="prompt" placeholder="Enter relevance prompt (e.g., 'Focus on privacy laws and regulations')"></textarea>
+                    </div>
                     <button type="submit" class="btn btn-primary">Create Library</button>
                 </form>
             </div>
         </div>
-        <h2>Your Libraries</h2>
+        <h2 class="mt-4">Your Libraries</h2>
         {% if libraries %}
             {% for library in libraries %}
-                <div class="card">
+                <div class="card mt-3">
                     <div class="card-body">
                         <h5 class="card-title">{{ library[1] }}</h5>
-                        <div class="btn-group">
-                            <a href="{{ url_for('view_library', library_id=library[0]) }}" class="btn btn-outline-primary btn-sm">View Contents</a>
-                            <a href="{{ url_for('crawl', library_id=library[0]) }}" class="btn btn-outline-success btn-sm">Crawl More</a>
-                            <a href="{{ url_for('delete_library', library_id=library[0]) }}" class="btn btn-outline-danger btn-sm" onclick="return confirm('Are you sure you want to delete this library and all its contents?');">Delete</a>
-                        </div>
+                        <p><strong>Relevance Prompt:</strong> {{ library[2][:100] + '...' if library[2] and len(library[2]) > 100 else library[2] or 'None' }}</p>
+                        <a href="{{ url_for('view_library', library_id=library[0]) }}" class="btn btn-primary">View Contents</a>
+                        <a href="{{ url_for('crawl') }}?library_id={{ library[0] }}" class="btn btn-secondary">Crawl More</a>
+                        <a href="{{ url_for('delete_library', library_id=library[0]) }}" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this library and all its contents?')">Delete</a>
                     </div>
                 </div>
             {% endfor %}

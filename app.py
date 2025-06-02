@@ -76,7 +76,7 @@ async def load_embedding_model():
                 os.environ["HF_HUB_DISABLE_XET"] = "1"
                 tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
                 model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/tmp/hf_cache')
-                logger.info("Fallback: all-MiniLM-L6-v2 model loaded without hw_xet.")
+                logger.info("Fallback: all-MiniLM-L6-v2 model loaded without hf_xet.")
             except Exception as e2:
                 logger.error(f"Fallback failed: {str(e2)}\n{traceback.format_exc()}")
                 raise
@@ -227,6 +227,40 @@ def query_grok_api(query, context, prompt):
         logger.error(f"Error querying xAI Grok API: {str(e)}\n{traceback.format_exc()}")
         return f"Fallback: Unable to generate AI summary. Please check API key or endpoint."
 
+async def evaluate_content_relevance(content, relevance_prompt):
+    """Evaluate content relevance using Grok API with user-defined prompt."""
+    if not content or not relevance_prompt:
+        return 0.0
+    try:
+        api_key = os.environ.get('XAI_API_KEY')
+        if not api_key:
+            logger.error("XAI_API_KEY not set")
+            return 0.0
+        
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+        prompt = f"""
+        {relevance_prompt}
+        Given the following content, determine its relevance to the specified criteria. Return a relevance score between 0 and 1, where 1 is highly relevant and 0 is not relevant at all.
+        """
+        completion = client.chat.completions.create(
+            model="grok-3-latest",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": f"Content: {content[:2000]}"}
+            ],
+            max_tokens=100
+        )
+        response = completion.choices[0].message.content
+        try:
+            score = float(response.strip())
+            return max(0.0, min(1.0, score))
+        except ValueError:
+            logger.error(f"Invalid relevance score from Grok API: {response}")
+            return 0.0
+    except Exception as e:
+        logger.error(f"Error evaluating content relevance: {str(e)}\n{traceback.format_exc()}")
+        return 0.0
+
 def normalize_url(url):
     """Normalize URL by adding https:// if missing and ensuring proper format."""
     if not url:
@@ -244,14 +278,14 @@ def normalize_url(url):
     except ValueError:
         return None
 
-async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_domain, domain_restriction, stop_event):
+async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_domain, domain_restriction, stop_event, max_batch_size):
     new_links = []
     try:
         frames = [f for f in page.frames if f.url != 'about:blank' and f.url and not re.search(r'(ads|analytics|doubleclick|googlesyndication)', f.url, re.IGNORECASE)][:5]
         logger.info(f"Found {len(frames)} valid frames on {url}")
         for frame in [page.main_frame] + frames:
-            if stop_event.is_set():
-                logger.info("Stop event detected, exiting FindLinks")
+            if stop_event.is_set() or len(new_links) >= max_batch_size:
+                logger.info("Stop event detected or max batch size reached, exiting FindLinks")
                 break
             frame_name = frame.name or frame.url or 'main'
             logger.debug(f"Processing frame: {frame_name}")
@@ -276,6 +310,8 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                 }''')
                 logger.info(f"Found {len(links)} raw links in frame {frame_name} on {url}")
                 for link in links:
+                    if len(new_links) >= max_batch_size or stop_event.is_set():
+                        break
                     absolute_url = urllib.parse.urljoin(url, link)
                     if (absolute_url not in visited_urls and 
                         absolute_url not in [u[2] for u in to_visit] and 
@@ -287,8 +323,8 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                         if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', absolute_url, re.IGNORECASE):
                             logger.debug(f"Skipping non-textual URL {absolute_url}")
                             continue
-                        if 'modal' in absolute_url.lower():
-                            logger.debug(f"Skipping modal URL {absolute_url}")
+                        if 'modal' in absolute_url.lower() or 'login' in absolute_url.lower():
+                            logger.debug(f"Skipping modal or login URL {absolute_url}")
                             continue
                         new_links.append((absolute_url, depth + 1))
                         logger.info(f"New link found: {absolute_url}, depth={depth + 1} in frame: {frame_name}")
@@ -310,14 +346,14 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
             click_count = 0
             max_clicks = 100
             for selector in accordion_selectors:
-                if click_count >= max_clicks or stop_event.is_set():
-                    logger.warning(f"Reached max click limit ({max_clicks}) or stop event in frame: {frame_name}")
+                if click_count >= max_clicks or stop_event.is_set() or len(new_links) >= max_batch_size:
+                    logger.warning(f"Reached max click limit ({max_clicks}), stop event, or max batch size in frame: {frame_name}")
                     break
                 try:
                     elements = await frame.query_selector_all(selector)
                     logger.debug(f"Found {len(elements)} elements for selector: {selector} in frame: {frame_name}")
                     for element in elements:
-                        if click_count >= max_clicks or stop_event.is_set():
+                        if click_count >= max_clicks or stop_event.is_set() or len(new_links) >= max_batch_size:
                             break
                         try:
                             is_visible = await element.is_visible()
@@ -338,6 +374,8 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                                         }''')
                                         logger.debug(f"Found {len(links)} links in collapsible body for selector: {selector}")
                                         for link in links:
+                                            if len(new_links) >= max_batch_size:
+                                                break
                                             absolute_url = urllib.parse.urljoin(url, link)
                                             if (absolute_url not in visited_urls and 
                                                 absolute_url not in [u[2] for u in to_visit] and 
@@ -349,8 +387,8 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                                                 if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', absolute_url, re.IGNORECASE):
                                                     logger.debug(f"Skipping non-textual URL {absolute_url}")
                                                     continue
-                                                if 'modal' in absolute_url.lower():
-                                                    logger.debug(f"Skipping modal URL {absolute_url}")
+                                                if 'modal' in absolute_url.lower() or 'login' in absolute_url.lower():
+                                                    logger.debug(f"Skipping modal or login URL {absolute_url}")
                                                     continue
                                                 new_links.append((absolute_url, depth + 1))
                                                 logger.info(f"New link found in collapsible body: {absolute_url}, depth={depth + 1} in frame: {frame_name}")
@@ -376,7 +414,7 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                     ]
                 
                 for action in actions[:10]:
-                    if stop_event.is_set():
+                    if stop_event.is_set() or len(new_links) >= max_batch_size:
                         break
                     try:
                         if action['type'] == 'click' and action['selector']:
@@ -391,6 +429,8 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                                             return Array.from(document.querySelectorAll('a[href]')).map(a => a.href);
                                         }''')
                                         for link in links:
+                                            if len(new_links) >= max_batch_size:
+                                                break
                                             absolute_url = urllib.parse.urljoin(url, link)
                                             if (absolute_url not in visited_urls and 
                                                 absolute_url not in [u[2] for u in to_visit] and 
@@ -402,8 +442,8 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                                                 if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', absolute_url, re.IGNORECASE):
                                                     logger.debug(f"Skipping non-textual URL {absolute_url}")
                                                     continue
-                                                if 'modal' in absolute_url.lower():
-                                                    logger.debug(f"Skipping modal URL {absolute_url}")
+                                                if 'modal' in absolute_url.lower() or 'login' in absolute_url.lower():
+                                                    logger.debug(f"Skipping modal or login URL {absolute_url}")
                                                     continue
                                                 new_links.append((absolute_url, depth + 1))
                                                 logger.info(f"New link found via click: {absolute_url}, depth={depth + 1} in frame: {frame_name}")
@@ -433,7 +473,7 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
     logger.info(f"Returning {len(new_links)} new links from FindLinks for {url}")
     return new_links
 
-async def ScanLinks(browser, links, max_results, items_crawled, stop_event):
+async def ScanLinks(browser, links, max_results, items_crawled, stop_event, relevance_prompt):
     scanned_links = []
     for url, depth in links:
         if items_crawled >= max_results or stop_event.is_set():
@@ -454,14 +494,16 @@ async def ScanLinks(browser, links, max_results, items_crawled, stop_event):
                 if 'text/html' in content_type:
                     content = await page.content()
                     cleaned_content = clean_content(content)
-                    if cleaned_content and len(cleaned_content.strip()) >= 100:
-                        scanned_links.append((url, cleaned_content, depth))
-                        logger.info(f"Meaningful content found for {url}")
                 elif 'application/pdf' in content_type:
                     cleaned_content = await extract_pdf_text(url)
-                    if cleaned_content and len(cleaned_content.strip()) >= 100:
+                
+                if cleaned_content and len(cleaned_content.strip()) >= 100:
+                    relevance_score = await evaluate_content_relevance(cleaned_content, relevance_prompt)
+                    if relevance_score >= 0.5:  # Adjustable threshold
                         scanned_links.append((url, cleaned_content, depth))
-                        logger.info(f"Meaningful PDF content found for {url}")
+                        logger.info(f"Meaningful and relevant content found for {url}, relevance_score={relevance_score:.2f}")
+                    else:
+                        logger.debug(f"Skipping {url} due to low relevance_score={relevance_score:.2f}")
             except Exception as e:
                 logger.error(f"Error scanning {url}: {str(e)}")
             finally:
@@ -469,7 +511,7 @@ async def ScanLinks(browser, links, max_results, items_crawled, stop_event):
         except Exception as e:
             logger.error(f"Error creating page for {url}: {str(e)}")
     
-    logger.info(f"Scanned {len(scanned_links)} links with meaningful content")
+    logger.info(f"Scanned {len(scanned_links)} links with meaningful and relevant content")
     return scanned_links
 
 async def CrawlLinks(scanned_links, library_id, max_results, items_crawled, stop_event):
@@ -490,7 +532,7 @@ async def CrawlLinks(scanned_links, library_id, max_results, items_crawled, stop
     logger.info(f"Crawled {len(crawled_data)} items")
     return crawled_data, items_crawled
 
-async def crawl_website(start_url, user_id, library_id, domain_restriction, crawl_depth, links_to_batch, max_results):
+async def crawl_website(start_url, user_id, library_id, domain_restriction, crawl_depth, links_to_batch, max_results, relevance_prompt):
     global crawl_state, stop_event
     crawl_state['running'] = True
     crawl_state['crawled_data'] = []
@@ -543,12 +585,16 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                 conn.commit()
                 conn.close()
                 crawl_state['running'] = False
-                socketio.emit('crawl_update', {
-                    'links_found': links_found,
-                    'links_scanned': links_scanned,
-                    'items_crawled': items_crawled,
-                    'status': f"error: {str(e)}"
-                }, namespace='/crawl')
+                try:
+                    socketio.emit('crawl_update', {
+                        'links_found': links_found,
+                        'links_scanned': links_scanned,
+                        'items_crawled': items_crawled,
+                        'status': f"error: {str(e)}"
+                    }, namespace='/crawl')
+                    logger.debug("Emitted crawl_update via Socket.IO")
+                except Exception as e:
+                    logger.error(f"Error emitting Socket.IO update: {str(e)}")
                 return []
             
             logger.info(f"Memory usage after browser launch: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -584,36 +630,37 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                     if 'text/html' in content_type:
                         content = await page.content()
                         cleaned_content = clean_content(content)
-                        if cleaned_content and len(cleaned_content.strip()) >= 100 and items_crawled < max_results:
-                            embedding = await generate_embedding(cleaned_content, *await load_embedding_model())
-                            if embedding is not None:
-                                crawl_state['crawled_data'].append((start_url, cleaned_content, embedding.tolist(), None, library_id))
-                                items_crawled += 1
-                                logger.info(f"Starting URL content crawled, items_crawled={items_crawled}")
                     elif 'application/pdf' in content_type:
                         cleaned_content = await extract_pdf_text(start_url)
-                        if cleaned_content and len(cleaned_content.strip()) >= 100 and items_crawled < max_results:
+                    
+                    if cleaned_content and len(cleaned_content.strip()) >= 100 and items_crawled < max_results:
+                        relevance_score = await evaluate_content_relevance(cleaned_content, relevance_prompt)
+                        if relevance_score >= 0.5:
                             embedding = await generate_embedding(cleaned_content, *await load_embedding_model())
                             if embedding is not None:
                                 crawl_state['crawled_data'].append((start_url, cleaned_content, embedding.tolist(), None, library_id))
                                 items_crawled += 1
-                                logger.info(f"Starting URL PDF content crawled, items_crawled={items_crawled}")
+                                logger.info(f"Starting URL content crawled, items_crawled={items_crawled}, relevance_score={relevance_score:.2f}")
                     
-                    new_links = await FindLinks(page, start_url, visited_urls, to_visit, 0, crawl_depth, base_domain, domain_restriction, stop_event)
+                    new_links = await FindLinks(page, start_url, visited_urls, to_visit, 0, crawl_depth, base_domain, domain_restriction, stop_event, links_to_batch)
                     for link_url, link_depth in new_links:
                         add_to_visit(link_url, get_url_priority(link_url), link_depth)
                     links_found += len(new_links)
                     visited_urls.add(start_url)
                     
-                    c.execute("UPDATE progress SET links_found = ?, items_crawled = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
-                              (links_found, items_crawled, start_url, str(user_id), start_url, library_id))
+                    c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
+                              (links_found, links_scanned, items_crawled, "running", start_url, str(user_id), start_url, library_id))
                     conn.commit()
-                    socketio.emit('crawl_update', {
-                        'links_found': links_found,
-                        'links_scanned': links_scanned,
-                        'items_crawled': items_crawled,
-                        'status': 'running'
-                    }, namespace='/crawl')
+                    try:
+                        socketio.emit('crawl_update', {
+                            'links_found': links_found,
+                            'links_scanned': links_scanned,
+                            'items_crawled': items_crawled,
+                            'status': 'running'
+                        }, namespace='/crawl')
+                        logger.debug("Emitted crawl_update via Socket.IO")
+                    except Exception as e:
+                        logger.error(f"Error emitting Socket.IO update: {str(e)}")
                 else:
                     logger.warning(f"Failed to load starting URL {start_url}: Status {response.status if response else 'None'}")
                 await page.close()
@@ -635,8 +682,8 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                         if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
                             logger.debug(f"Skipping non-textual URL: {url}")
                             continue
-                        if 'modal' in url.lower():
-                            logger.debug(f"Skipping modal URL: {url}")
+                        if 'modal' in url.lower() or 'login' in url.lower():
+                            logger.debug(f"Skipping modal or login URL: {url}")
                             continue
                         parsed_url = urllib.parse.urlparse(url)
                         if domain_restriction and parsed_url.netloc != base_domain:
@@ -654,8 +701,8 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                     break
                 
                 links_found += len(batch_links)
-                scanned_links = await ScanLinks(browser, batch_links, max_results, items_crawled, stop_event)
                 links_scanned += len(batch_links)
+                scanned_links = await ScanLinks(browser, batch_links, max_results, items_crawled, stop_event, relevance_prompt)
                 
                 new_crawled_data, items_crawled = await CrawlLinks(scanned_links, library_id, max_results, items_crawled, stop_event)
                 crawl_state['crawled_data'].extend(new_crawled_data)
@@ -663,12 +710,16 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                 c.execute("UPDATE progress SET links_found = ?, links_scanned = ?, items_crawled = ?, status = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                           (links_found, links_scanned, items_crawled, "running", str(user_id), start_url, library_id))
                 conn.commit()
-                socketio.emit('crawl_update', {
-                    'links_found': links_found,
-                    'links_scanned': links_scanned,
-                    'items_crawled': items_crawled,
-                    'status': 'running'
+                try:
+                    socketio.emit('crawl_update', {
+                        'links_found': links_found,
+                        'links_scanned': links_scanned,
+                        'items_crawled': items_crawled,
+                        'status': 'running'
                     }, namespace='/crawl')
+                    logger.debug("Emitted crawl_update via Socket.IO")
+                except Exception as e:
+                    logger.error(f"Error emitting Socket.IO update: {str(e)}")
                 
                 if items_crawled >= max_results or stop_event.is_set():
                     break
@@ -677,24 +728,32 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
             c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                       ("complete", "", str(user_id), start_url, library_id))
             conn.commit()
-            socketio.emit('crawl_update', {
-                'links_found': links_found,
-                'links_scanned': links_scanned,
-                'items_crawled': items_crawled,
-                'status': 'complete'
-            }, namespace='/crawl')
+            try:
+                socketio.emit('crawl_update', {
+                    'links_found': links_found,
+                    'links_scanned': links_scanned,
+                    'items_crawled': items_crawled,
+                    'status': 'complete'
+                }, namespace='/crawl')
+                logger.debug("Emitted crawl_update via Socket.IO")
+            except Exception as e:
+                logger.error(f"Error emitting Socket.IO update: {str(e)}")
     except Exception as e:
         logger.error(f"Unexpected error during crawl: {str(e)}\n{traceback.format_exc()}")
         c.execute("UPDATE progress SET status = ?, current_url = ? WHERE user_id = ? AND url = ? AND library_id = ?",
                   (f"error: {str(e)}", "", str(user_id), start_url, library_id))
         conn.commit()
         conn.close()
-        socketio.emit('crawl_update', {
-            'links_found': links_found,
-            'links_scanned': links_scanned,
-            'items_crawled': items_crawled,
-            'status': f"error: {str(e)}"
-        }, namespace='/crawl')
+        try:
+            socketio.emit('crawl_update', {
+                'links_found': links_found,
+                'links_scanned': links_scanned,
+                'items_crawled': items_crawled,
+                'status': f"error: {str(e)}"
+            }, namespace='/crawl')
+            logger.debug("Emitted crawl_update via Socket.IO")
+        except Exception as e:
+            logger.error(f"Error emitting Socket.IO update: {str(e)}")
     finally:
         if browser:
             try:
@@ -779,17 +838,20 @@ async def stop_crawl():
         conn.commit()
         conn.close()
         
-        socketio.emit('crawl_update', {
-            'links_found': 0,
-            'links_scanned': 0,
-            'items_crawled': 0,
-            'status': 'stopped'
-        }, namespace='/crawl')
-        logger.info("Sent stopped status via Socket.IO")
+        try:
+            socketio.emit('crawl_update', {
+                'links_found': 0,
+                'links_scanned': 0,
+                'items_crawled': 0,
+                'status': 'stopped'
+            }, namespace='/crawl')
+            logger.debug("Emitted crawl_update via Socket.IO for stop")
+        except Exception as e:
+            logger.error(f"Error emitting Socket.IO update: {str(e)}")
         
         return jsonify({'status': 'success', 'message': f"Crawl stopped{' and data committed' if action == 'commit' else ' and data discarded' if action == 'discard' else ''}"})
     except Exception as e:
-        logger.error(f"Error stopping crawl: {str(e)}")
+        logger.error(f"Error stopping crawl: {str(e)}\n{traceback.format_exc()}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/')
@@ -872,15 +934,16 @@ def libraries():
         cur = conn.cursor()
         if request.method == 'POST':
             name = request.form.get('name')
+            prompt = request.form.get('prompt')
             if not name:
                 flash('Library name cannot be empty.', 'error')
             else:
-                cur.execute("INSERT INTO libraries (user_id, name) VALUES (%s, %s)", (int(current_user.id), name))
+                cur.execute("INSERT INTO libraries (user_id, name, prompt) VALUES (%s, %s, %s)", (int(current_user.id), name, prompt))
                 conn.commit()
                 flash('Library created successfully.', 'success')
                 return redirect(url_for('libraries'))
         
-        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (int(current_user.id),))
+        cur.execute("SELECT id, name, prompt FROM libraries WHERE user_id = %s", (int(current_user.id),))
         libraries = cur.fetchall()
         cur.close()
         conn.close()
@@ -982,20 +1045,42 @@ def add_library():
             return jsonify({'status': 'error', 'message': 'Please log in to add a library'}), 401
         
         name = request.form.get('name')
+        prompt = request.form.get('prompt')
         if not name:
             flash('Library name cannot be empty.', 'error')
             return jsonify({'status': 'error', 'message': 'Library name cannot be empty'}), 400
         
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO libraries (user_id, name) VALUES (%s, %s) RETURNING id", (int(current_user.id), name))
+        cur.execute("INSERT INTO libraries (user_id, name, prompt) VALUES (%s, %s, %s) RETURNING id", (int(current_user.id), name, prompt))
         library_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'status': 'success', 'library_id': library_id, 'library_name': name})
+        return jsonify({'status': 'success', 'library_id': library_id, 'library_name': name, 'library_prompt': prompt or ''})
     except Exception as e:
         logger.error(f"Error in add_library endpoint: {e}\n{traceback.format_exc()}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/get_library_prompt/<int:library_id>', methods=['GET'])
+@login_required
+def get_library_prompt(library_id):
+    try:
+        if not current_user.is_authenticated:
+            logger.error("Unauthenticated user accessing get_library_prompt endpoint")
+            return jsonify({'status': 'error', 'message': 'User not authenticated'}), 401
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT prompt FROM libraries WHERE id = %s AND user_id = %s", (library_id, int(current_user.id)))
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        if result:
+            return jsonify({'status': 'success', 'prompt': result[0] or ''})
+        return jsonify({'status': 'error', 'message': 'Library not found'}), 404
+    except Exception as e:
+        logger.error(f"Error in get_library_prompt endpoint: {e}\n{traceback.format_exc()}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/prompts', methods=['GET', 'POST'])
@@ -1102,7 +1187,7 @@ def crawl():
         
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, name FROM libraries WHERE user_id = %s", (int(current_user.id),))
+        cur.execute("SELECT id, name, prompt FROM libraries WHERE user_id = %s", (int(current_user.id),))
         libraries = cur.fetchall()
         cur.close()
         conn.close()
@@ -1119,6 +1204,7 @@ def crawl():
                 flash('Crawl Depth, Links to Batch, and Max Number of Results must be valid numbers.', 'error')
                 return render_template('crawl.html', libraries=libraries)
             
+            relevance_prompt = request.form.get('relevance_prompt', '')
             if not start_url or not library_id:
                 flash('URL and library selection cannot be empty.', 'error')
                 return render_template('crawl.html', libraries=libraries)
@@ -1131,7 +1217,7 @@ def crawl():
             
             logger.info(f"Starting crawl for {start_url} by user {current_user.id} in library {library_id}")
             try:
-                crawled_data = asyncio.run(crawl_website(start_url, current_user.id, int(library_id), domain_restriction, crawl_depth, links_to_batch, max_results))
+                crawled_data = asyncio.run(crawl_website(start_url, current_user.id, int(library_id), domain_restriction, crawl_depth, links_to_batch, max_results, relevance_prompt))
                 
                 if crawled_data:
                     conn = get_db_connection()
@@ -1184,6 +1270,7 @@ def crawl_progress():
             "items_crawled": result[2] if result else 0,
             "status": result[3] if result else "waiting"
         }
+        logger.debug(f"Returning crawl_progress: {data}")
         return jsonify(data)
     except Exception as e:
         logger.error(f"Error in crawl_progress: {e}\n{traceback.format_exc()}")
@@ -1202,7 +1289,9 @@ def current_url():
                   (str(current_user.id), request.args.get('url'), request.args.get('library_id')))
         result = c.fetchone()
         conn.close()
-        return jsonify({"current_url": result[0] if result and result[0] else ""})
+        data = {"current_url": result[0] if result and result[0] else ""}
+        logger.debug(f"Returning current_url: {data}")
+        return jsonify(data)
     except Exception as e:
         logger.error(f"Error in current_url: {e}\n{traceback.format_exc()}")
         return jsonify({"status": "error", "message": str(e)}), 500

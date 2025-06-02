@@ -65,6 +65,7 @@
                 console.error('WebSocket connection error:', error);
             });
             socket.on('crawl_update', function(data) {
+                console.log('Received crawl_update:', data);
                 progressDiv.innerHTML = `
                     <p><strong>Links Found:</strong> ${data.links_found}</p>
                     <p><strong>Links Scanned:</strong> ${data.links_scanned}</p>
@@ -84,9 +85,12 @@
 
             // Fallback polling for progress
             progressInterval = setInterval(() => {
-                fetch(`/crawl_progress?url=${encodeURIComponent(url)}&library_id=${libraryId}`, { credentials: 'include' })
+                fetch(`/crawl_progress?url=${encodeURIComponent(url)}&library_id=${libraryId}`, { 
+                    credentials: 'include' 
+                })
                     .then(response => response.json())
                     .then(data => {
+                        console.log('Progress fetch:', data);
                         if (data.status !== 'error') {
                             progressDiv.innerHTML = `
                                 <p><strong>Links Found:</strong> ${data.links_found}</p>
@@ -112,9 +116,12 @@
 
             // Poll for current URL
             pollInterval = setInterval(() => {
-                fetch(`/current_url?url=${encodeURIComponent(url)}&library_id=${libraryId}`, { credentials: 'include' })
+                fetch(`/current_url?url=${encodeURIComponent(url)}&library_id=${libraryId}`, { 
+                    credentials: 'include' 
+                })
                     .then(response => response.json())
                     .then(data => {
+                        console.log('Current URL fetch:', data);
                         if (data.current_url) {
                             currentUrlSpan.textContent = `Crawling: ${data.current_url}`;
                             currentUrlSpan.classList.add('text-primary');
@@ -155,10 +162,12 @@
             fetch('/stop_crawl', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=${action}`
+                body: `action=${action}`,
+                credentials: 'include'
             })
             .then(response => response.json())
             .then(data => {
+                console.log('Stop crawl response:', data);
                 if (data.status === 'success') {
                     alert(data.message);
                     if (action !== 'cancel') {
@@ -187,17 +196,37 @@
             const select = document.getElementById('library-select');
             const newLibraryDiv = document.getElementById('new_library_input');
             const libraryIdInput = document.getElementById('library_id');
+            const promptInput = document.getElementById('relevance_prompt');
             if (select.value === 'other') {
                 newLibraryDiv.style.display = 'block';
                 libraryIdInput.value = '';
+                promptInput.value = ''; // Clear prompt for new library
             } else {
                 newLibraryDiv.style.display = 'none';
                 libraryIdInput.value = select.value;
+                // Fetch prompt for selected library
+                if (select.value) {
+                    fetch(`/get_library_prompt/${select.value}`, { credentials: 'include' })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.status === 'success') {
+                                promptInput.value = data.prompt;
+                            } else {
+                                console.error('Error fetching prompt:', data.message);
+                                promptInput.value = '';
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching prompt:', error);
+                            promptInput.value = '';
+                        });
+                }
             }
         }
 
         function addLibrary() {
             const name = document.getElementById('new_library_name').value.trim();
+            const prompt = document.getElementById('new_library_prompt').value.trim();
             if (!name) {
                 alert('Library name cannot be empty.');
                 return;
@@ -205,10 +234,12 @@
             fetch('/add_library', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `name=${encodeURIComponent(name)}`
+                body: `name=${encodeURIComponent(name)}&prompt=${encodeURIComponent(prompt)}`,
+                credentials: 'include'
             })
             .then(response => response.json())
             .then(data => {
+                console.log('Add library response:', data);
                 if (data.status === 'success') {
                     const select = document.getElementById('library-select');
                     const option = document.createElement('option');
@@ -217,14 +248,17 @@
                     select.insertBefore(option, select.lastElementChild);
                     select.value = data.library_id;
                     document.getElementById('new_library_name').value = '';
+                    document.getElementById('new_library_prompt').value = '';
                     document.getElementById('new_library_input').style.display = 'none';
                     document.getElementById('library_id').value = data.library_id;
+                    document.getElementById('relevance_prompt').value = data.library_prompt;
                     alert('Library created successfully!');
                 } else {
                     alert('Error creating library: ' + data.message);
                 }
             })
             .catch(error => {
+                console.error('Error creating library:', error);
                 alert('Error creating library: ' + error);
             });
         }
@@ -307,10 +341,15 @@
                             <option value="other">Other</option>
                         </select>
                         <div id="new_library_input" style="display: none;" class="mt-2">
-                            <input type="text" class="form-control" id="new_library_name" placeholder="Enter new library name">
+                            <input type="text" class="form-control mb-2" id="new_library_name" name="new_library_name" placeholder="Enter new library name">
+                            <textarea class="form-control mb-2" id="new_library_prompt" name="new_library_prompt" placeholder="Enter relevance prompt (e.g., 'Focus on privacy laws and regulations')"></textarea>
                             <button type="button" class="btn btn-primary mt-2 add-library-button" onclick="addLibrary()">Add Library</button>
                         </div>
                         <input type="hidden" id="library_id" name="library_id" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="relevance_prompt" class="form-label">Relevance Prompt</label>
+                        <textarea class="form-control" id="relevance_prompt" name="relevance_prompt" placeholder="Enter relevance prompt (e.g., 'Focus on privacy laws and regulations')"></textarea>
                     </div>
                     <div class="mb-3">
                         <label for="domain-restriction" class="form-label">Enforce Domain Restriction</label>
