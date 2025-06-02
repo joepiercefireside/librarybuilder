@@ -240,7 +240,7 @@ async def evaluate_content_relevance(content, relevance_prompt):
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         prompt = f"""
         {relevance_prompt}
-        Given the following content, determine its relevance to the specified criteria. Return only a numeric relevance score between 0.0 and 1.0, where 1.0 is highly relevant and 0.0 is not relevant. Do not include any text, explanations, or formatting, just the number.
+        Evaluate the content for references to specific country laws and regulations about data privacy, in any language. Exclude general privacy resources, training, certifications, or networking content unless they explicitly detail country-specific legislation. Return only a numeric relevance score between 0.0 and 1.0, where 1.0 indicates content directly about country-specific data privacy laws and 0.0 indicates no relevance. Do not include text, explanations, or formatting, just the number.
         """
         completion = client.chat.completions.create(
             model="grok-3-latest",
@@ -345,9 +345,10 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                 '[data-toggle], [data-expand], [data-collapse]',
                 '[role="button"], [aria-controls]',
                 '.directory-item, .collapse-header, .panel-heading',
+                '[href*="gov"]', '[href*="law"]', '[href*="regulation"]'
             ]
             click_count = 0
-            max_clicks = 100
+            max_clicks = 200  # Increased for more interactions
             for selector in accordion_selectors:
                 if click_count >= max_clicks or stop_event.is_set() or len(new_links) >= max_batch_size:
                     logger.warning(f"Reached max click limit ({max_clicks}), stop event, or max batch size in frame: {frame_name}")
@@ -364,7 +365,7 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                                 logger.debug(f"Skipping invisible element for selector: {selector}")
                                 continue
                             aria_expanded = await element.get_attribute('aria-expanded')
-                            if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag']:
+                            if aria_expanded == 'false' or aria_expanded is None or selector in ['.collapsible-header', '.pii-tag.country-tag', '[href*="gov"]', '[href*="law"]', '[href*="regulation"]']:
                                 for _ in range(2):
                                     try:
                                         await frame.evaluate('''(element) => element.click()''', element)
@@ -412,7 +413,7 @@ async def FindLinks(page, url, visited_urls, to_visit, depth, crawl_depth, base_
                 if not actions:
                     logger.warning(f"Grok API returned no actions for frame {frame_name}, using fallback selectors")
                     actions = [
-                        {"type": "click", "selector": ".collapsible-header, .pii-tag.country-tag, [aria-expanded='false'], .accordion-toggle, .collapsible, [data-toggle], .directory-item, a[href*='resource']", "value": "", "priority": 1},
+                        {"type": "click", "selector": ".collapsible-header, .pii-tag.country-tag, [aria-expanded='false'], .accordion-toggle, .collapsible, [data-toggle], .directory-item, a[href*='resource'], a[href*='gov'], a[href*='law']", "value": "", "priority": 1},
                         {"type": "scroll", "selector": "", "value": "", "priority": 2}
                     ]
                 
@@ -502,7 +503,7 @@ async def ScanLinks(browser, links, max_results, items_crawled, stop_event, rele
                 
                 if cleaned_content and len(cleaned_content.strip()) >= 100:
                     relevance_score = await evaluate_content_relevance(cleaned_content, relevance_prompt)
-                    if relevance_score >= 0.3:  # Lowered threshold for testing
+                    if relevance_score >= 0.3:
                         scanned_links.append((url, cleaned_content, depth))
                         logger.info(f"Meaningful and relevant content found for {url}, relevance_score={relevance_score:.2f}")
                     else:
@@ -530,6 +531,20 @@ async def CrawlLinks(scanned_links, library_id, max_results, items_crawled, stop
                 crawled_data.append((url, cleaned_content, embedding.tolist(), None, library_id))
                 items_crawled += 1
                 logger.info(f"Crawled and embedded {url}, items_crawled={items_crawled}")
+                
+                # Collect new links from this page
+                page = await crawl_state['browser'].new_page()
+                try:
+                    await page.goto(url, timeout=90000, wait_until='networkidle')
+                    new_links = await FindLinks(page, url, set(), [], depth, max_results, urllib.parse.urlparse(url).netloc, False, stop_event, 10)
+                    for link_url, link_depth in new_links:
+                        if link_url not in [u[2] for u in to_visit] and link_url not in visited_urls:
+                            add_to_visit(link_url, get_url_priority(link_url), link_depth)
+                    logger.info(f"Collected {len(new_links)} new links from {url}")
+                except Exception as e:
+                    logger.error(f"Error collecting links from {url}: {str(e)}")
+                finally:
+                    await page.close()
         except Exception as e:
             logger.error(f"Error crawling {url}: {str(e)}")
     logger.info(f"Crawled {len(crawled_data)} items")
@@ -550,16 +565,23 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
     logger.info(f"CPU usage before crawl: {psutil.cpu_percent()}%")
     
     visited_urls = set()
+    global to_visit
     to_visit = []
     def add_to_visit(url, priority, depth):
         heappush(to_visit, (priority, depth, url))
     
-    education_keywords = ['/education', '/learning-center', '/resources']
+    # Country keywords for prioritization
+    country_keywords = ['argentina', 'brazil', 'china', 'germany', 'france', 'law', 'regulation', 'privacy', 'gov']
     def get_url_priority(url):
-        for keyword in education_keywords:
-            if keyword in url.lower():
-                return 0
-        return 1
+        url_lower = url.lower()
+        if any(keyword in url_lower for keyword in country_keywords):
+            return 0
+        if any(keyword in url_lower for keyword in ['/education', '/learning-center', '/resources']):
+            return 1
+        parsed_url = urllib.parse.urlparse(url)
+        if parsed_url.netloc != base_domain:
+            return 0  # Prioritize external links
+        return 2
     
     base_domain = urllib.parse.urlparse(start_url).netloc
     add_to_visit(start_url, get_url_priority(start_url), 0)
@@ -690,10 +712,10 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                             logger.debug(f"Skipping invalid or visited URL: {url}")
                             continue
                         if re.search(r'\.(jpg|jpeg|png|gif|bmp|svg|ico|mp4|avi|mov|wmv|flv|webm|mp3|wav|ogg|css|js|woff|woff2|ttf|eot)$', url, re.IGNORECASE):
-                            logger.debug(f"Skipping non-textual URL {url}")
+                            logger.debug(f"Skipping non-textual URL: {url}")
                             continue
                         if 'modal' in url.lower() or 'login' in url.lower():
-                            logger.debug(f"Skipping modal or login URL {url}")
+                            logger.debug(f"Skipping modal or login URL: {url}")
                             continue
                         parsed_url = urllib.parse.urlparse(url)
                         if domain_restriction and parsed_url.netloc != base_domain:
@@ -707,6 +729,7 @@ async def crawl_website(start_url, user_id, library_id, domain_restriction, craw
                         continue
                 
                 logger.info(f"Collected {len(batch_links)} links for batch processing")
+                logger.debug(f"Remaining to_visit: {len(to_visit)}")
                 if not batch_links or stop_event.is_set():
                     break
                 
