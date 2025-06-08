@@ -1,86 +1,118 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Libraries - LibraryBuilder</title>
-    <link rel="icon" href="/static/favicon.png">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/">
-                <img src="/static/logo.png" alt="LibraryBuilder Logo">
+    <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{ url_for('index') }}">
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="LibraryBuilder Logo" width="30" height="30" class="d-inline-block align-text-top">
+                LibraryBuilder
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav justify-content-center flex-grow-1">
+                <ul class="navbar-nav ms-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="/">Home</a>
+                        <a class="nav-link" href="{{ url_for('index') }}">Home</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link active" href="/libraries">Libraries</a>
+                        <a class="nav-link active" href="{{ url_for('libraries') }}">Libraries</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/prompts">Prompts</a>
+                        <a class="nav-link" href="{{ url_for('prompts') }}">Prompts</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/crawl">Crawl</a>
+                        <a class="nav-link" href="{{ url_for('crawl') }}">Crawl</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/search">Search</a>
+                        <a class="nav-link" href="{{ url_for('search') }}">Search</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/logout">Logout</a>
+                        <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
                     </li>
                 </ul>
             </div>
         </div>
     </nav>
-    <div class="container">
-        <h1>Manage Libraries</h1>
+
+    <div class="container mt-5">
+        <h1 class="mb-4">Your Libraries</h1>
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
-                    <div class="alert alert-{{ 'success' if category == 'success' else 'info' if category == 'info' else 'danger' }}">{{ message }}</div>
+                    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
                 {% endfor %}
             {% endif %}
         {% endwith %}
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Create New Library</h5>
-                <form method="post">
-                    <div class="mb-3">
-                        <label for="name" class="form-label">Library Name</label>
-                        <input type="text" class="form-control" id="name" name="name" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="prompt" class="form-label">Relevance Prompt</label>
-                        <textarea class="form-control" id="prompt" name="prompt" placeholder="Enter relevance prompt (e.g., 'Focus on privacy laws and regulations')"></textarea>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Create Library</button>
-                </form>
-            </div>
-        </div>
-        <h2 class="mt-4">Your Libraries</h2>
-        {% if libraries %}
-            {% for library in libraries %}
-                <div class="card mt-3">
-                    <div class="card-body">
-                        <h5 class="card-title">{{ library[1] }}</h5>
-                        <p><strong>Relevance Prompt:</strong> {{ library[2][:100] + '...' if library[2] and len(library[2]) > 100 else library[2] or 'None' }}</p>
-                        <a href="{{ url_for('view_library', library_id=library[0]) }}" class="btn btn-primary">View Contents</a>
-                        <a href="{{ url_for('crawl') }}?library_id={{ library[0] }}" class="btn btn-secondary">Crawl More</a>
-                        <a href="{{ url_for('delete_library', library_id=library[0]) }}" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this library and all its contents?')">Delete</a>
-                    </div>
+
+        <div class="mb-4">
+            <h3>Create New Library</h3>
+            <form id="createLibraryForm" action="{{ url_for('add_library') }}" method="post">
+                <div class="mb-3">
+                    <label for="name" class="form-label">Library Name</label>
+                    <input type="text" class="form-control" id="name" name="name" required>
                 </div>
-            {% endfor %}
+                <div class="mb-3">
+                    <label for="prompt" class="form-label">Relevance Prompt</label>
+                    <textarea class="form-control" id="prompt" name="prompt" rows="4"></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Create Library</button>
+            </form>
+        </div>
+
+        <h3>Existing Libraries</h3>
+        {% if libraries|length > 0 %}
+            <div class="row">
+                {% for library in libraries %}
+                    <div class="col-md-4 mb-3">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">{{ library[1] }}</h5>
+                                <p><strong>Relevance Prompt:</strong> {{ library[2][:100] + '...' if library[2] and library[2]|length > 100 else library[2] or 'None' }}</p>
+                                <a href="{{ url_for('view_library', library_id=library[0]) }}" class="btn btn-primary">View</a>
+                                <a href="{{ url_for('delete_library', library_id=library[0]) }}" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this library?');">Delete</a>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
         {% else %}
             <p>No libraries found. Create one above!</p>
         {% endif %}
     </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.getElementById('createLibraryForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            try {
+                const response = await fetch(this.action, {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    window.location.reload();
+                } else {
+                    alert(result.message);
+                }
+            } catch (error) {
+                console.error('Error creating library:', error);
+                alert('An error occurred while creating the library.');
+            }
+        });
+    </script>
 </body>
 </html>

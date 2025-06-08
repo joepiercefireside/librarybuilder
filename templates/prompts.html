@@ -1,126 +1,97 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
-    <html>
-    <head>
-        <title>Prompts - LibraryBuilder</title>
-        <link rel="icon" href="/static/favicon.png">
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link rel="stylesheet" href="/static/styles.css">
-    </head>
-    <body>
-        <nav class="navbar navbar-expand-lg navbar-dark">
-            <div class="container">
-                <a class="navbar-brand" href="/">
-                    <img src="/static/logo.png" alt="LibraryBuilder Logo">
-                </a>
-                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                    <span class="navbar-toggler-icon"></span>
-                </button>
-                <div class="collapse navbar-collapse" id="navbarNav">
-                    <ul class="navbar-nav justify-content-center flex-grow-1">
-                        <li class="nav-item">
-                            <a class="nav-link" href="/">Home</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/libraries">Libraries</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link active" href="/prompts">Prompts</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/crawl">Crawl</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/search">Search</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/logout">Logout</a>
-                        </li>
-                    </ul>
-                </div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prompts - LibraryBuilder</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{ url_for('index') }}">
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="LibraryBuilder Logo" width="30" height="30" class="d-inline-block align-text-top">
+                LibraryBuilder
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('index') }}">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('libraries') }}">Libraries</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="{{ url_for('prompts') }}">Prompts</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('crawl') }}">Crawl</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('search') }}">Search</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
+                    </li>
+                </ul>
             </div>
-        </nav>
-        <div class="container">
-            <h1>Manage Prompts</h1>
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-            <div class="card">
-                <div class="card-body">
-                    <h5 class="card-title">Create New Prompt</h5>
-                    <form method="post">
-                        <div class="mb-3">
-                            <label for="name" class="form-label">Prompt Name</label>
-                            <input type="text" class="form-control" id="name" name="name" required>
-                        </div>
-                        <div class="mb-3">
-                            <label for="content" class="form-label">Prompt Content</label>
-                            <textarea class="form-control" id="content" name="content" rows="4" required></textarea>
-                        </div>
-                        <button type="submit" class="btn btn-primary">Create Prompt</button>
-                    </form>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <h1 class="mb-4">Your Prompts</h1>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="mb-4">
+            <h3>Create New Prompt</h3>
+            <form action="{{ url_for('prompts') }}" method="post">
+                <div class="mb-3">
+                    <label for="name" class="form-label">Prompt Name</label>
+                    <input type="text" class="form-control" id="name" name="name" required>
                 </div>
-            </div>
-            <h2>Your Prompts</h2>
-            {% if prompts %}
+                <div class="mb-3">
+                    <label for="content" class="form-label">Prompt Content</label>
+                    <textarea class="form-control" id="content" name="content" rows="4" required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Create Prompt</button>
+            </form>
+        </div>
+
+        <h3>Existing Prompts</h3>
+        {% if prompts|length > 0 %}
+            <div class="row">
                 {% for prompt in prompts %}
-                    <div class="card">
-                        <div class="card-body">
-                            <h5 class="card-title">{{ prompt[1] }}</h5>
-                            <p class="card-text">{{ prompt[2] }}</p>
-                            <div class="btn-group">
-                                <a href="{{ url_for('edit_prompt', prompt_id=prompt[0]) }}" class="btn btn-outline-primary btn-sm">Edit</a>
-                                <a href="{{ url_for('delete_prompt', prompt_id=prompt[0]) }}" class="btn btn-outline-danger btn-sm" onclick="return confirm('Are you sure you want to delete this prompt?');">Delete</a>
+                    <div class="col-md-4 mb-3">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">{{ prompt[1] }}</h5>
+                                <p><strong>Content:</strong> {{ prompt[2][:100] + '...' if prompt[2] and prompt[2]|length > 100 else prompt[2] or 'None' }}</p>
+                                <a href="{{ url_for('edit_prompt', prompt_id=prompt[0]) }}" class="btn btn-primary">Edit</a>
+                                <a href="{{ url_for('delete_prompt', prompt_id=prompt[0]) }}" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this prompt?');">Delete</a>
                             </div>
                         </div>
                     </div>
                 {% endfor %}
-            {% else %}
-                <p>No prompts found. Create one above!</p>
-            {% endif %}
-        </div>
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    </body>
-    </html>
+            </div>
+        {% else %}
+            <p>No prompts found. Create one above!</p>
+        {% endif %}
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
